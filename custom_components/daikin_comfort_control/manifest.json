@@ -1,0 +1,11 @@
+{
+  "domain": "daikin_comfort_control",
+  "name": "Daikin Comfort Control",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/Tech-Morph/daikin_comfort_control",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": [],
+  "iot_class": "cloud_polling"
+}
