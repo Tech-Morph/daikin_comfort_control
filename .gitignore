@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# mitmproxy capture output - contain live tokens, never commit
+daikin_api.log
+daikin_capture.json
+*.mitm
+docs/capture/
+
+# Secrets
+.env
+secrets.yaml
+
+# APK build artifacts
+*.apk
+*.aab
+daikin_patched/
+*.keystore
+debug.keystore
+frida-gadget*
+libfrida-gadget.so
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
