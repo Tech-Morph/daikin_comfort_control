@@ -28,9 +28,9 @@ Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API w
 |---|---|---|
 | Cool | 3 | ✅ Confirmed |
 | Heat | 4 | ✅ Confirmed |
-| Auto | 1 | ⚠️ Inferred |
-| Dry | 2 | ⚠️ Inferred |
-| Fan Only | 6 | ⚠️ Inferred |
+| Auto | 1 | ✅ Confirmed |
+| Dry | 2 | ✅ Confirmed |
+| Fan Only | 6 | ✅ Confirmed |
 
 ---
 
