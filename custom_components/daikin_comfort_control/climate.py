@@ -67,8 +67,8 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     _attr_temperature_unit      = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
-    _attr_min_temp              = 18.0
-    _attr_max_temp              = 32.0
+    _attr_min_temp              = 17.5
+    _attr_max_temp              = 32.5
     _attr_hvac_modes            = HVAC_MODES
     _attr_fan_modes             = FAN_MODES
     _attr_supported_features    = (
