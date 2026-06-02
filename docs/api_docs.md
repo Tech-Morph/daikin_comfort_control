@@ -1,8 +1,10 @@
 # Daikin Comfort Control — API Documentation
 
-> **Status:** Confirmed via mitmproxy traffic capture · 2026-06-02  
+> **Status:** ✅ Fully confirmed via mitmproxy traffic capture · 2026-06-02  
 > **Device:** Daikin FTXM12WVJU9 · Adapter: BRP069C4x · FW: 3.1.0  
 > **App:** Daikin Comfort Control (Android) · `okhttp/4.9.2`
+
+All endpoints, parameters, and response formats have been confirmed by direct traffic capture. No inferred values remain for core functionality.
 
 ---
 
@@ -34,7 +36,7 @@ Content-Type: application/x-www-form-urlencoded
 | `username` | Daikin account email |
 | `password` | Daikin account password |
 
-**Required headers (no auth token needed for login):**
+**Request headers:**
 
 ```
 x-daikin-uid: <device-uid>
@@ -52,31 +54,56 @@ accept-encoding: gzip
 }
 ```
 
-**Confirmed response details (2026-06-02):**
-
 | Field | Type | Notes |
 |---|---|---|
-| `access_token` | string | Hex string, ~190 chars. **Not a JWT** (no `.` separators). |
-| `refresh_token` | string | Hex string, ~190 chars. Same format as access token. |
-| `expires_in` | string | `"600"` — returned as a **string**, not an integer. Token TTL = 10 minutes. |
-| `token_type` | — | **Field is absent.** The app hardcodes the `bearer` prefix. |
+| `access_token` | string | Hex string, ~190 chars. Not a JWT. |
+| `refresh_token` | string | Hex string, ~190 chars. Same format. |
+| `expires_in` | string | Always `"600"` (string, not integer). Token TTL = 10 minutes. |
+| `token_type` | — | **Absent.** The app hardcodes the `bearer` prefix. |
 
-**Server also sets a session cookie** (`JSESSIONID`) but the app ignores it entirely — all auth is via the bearer token header.
+Server also sets a `JSESSIONID` cookie; the app ignores it entirely.
+
+---
 
 ### Token Refresh
 
 ```
 POST /common/token_refresh
 Content-Type: application/x-www-form-urlencoded
-
-grant_type=refresh_token&refresh_token=<token>
 ```
 
-Falls back to full re-login if this endpoint returns non-200.
+**Request body:**
+
+| Field | Value |
+|---|---|
+| `grant_type` | `refresh_token` |
+| `refresh_token` | Current refresh token |
+
+**Request headers:**
+
+```
+x-daikin-uid: <device-uid>
+user-agent: okhttp/4.9.2
+accept-encoding: gzip
+```
+
+> ⚠️ No `authentication` header is sent for this request — only `x-daikin-uid`.
+
+**Response — identical schema to login:**
+
+```json
+{
+    "access_token":  "<new hex token>",
+    "refresh_token": "<new hex token>",
+    "expires_in":    "600"
+}
+```
+
+**Both tokens rotate on every refresh.** Always store the new `refresh_token` from the response.
 
 ---
 
-## Auth Headers (All Subsequent Requests)
+## Auth Headers (All Other Requests)
 
 > ⚠️ The authentication header uses the non-standard name `authentication` (not `Authorization`).
 
@@ -87,7 +114,7 @@ user-agent: okhttp/4.9.2
 accept-encoding: gzip
 ```
 
-The `x-daikin-uid` is a static hex string tied to the adapter, captured from mitmproxy as `dcd2e719644c4716afc1f729e98b609c`.
+The `x-daikin-uid` is a static hex string tied to the adapter (e.g. `dcd2e719644c4716afc1f729e98b609c`).
 
 ---
 
@@ -104,11 +131,11 @@ GET /common/device_list
 ret=OK,ip=71.63.249.75,device=30050:47:0:aircon:3_1_0:1:0:0:DaikinAP07464:3:polling:us:16:0:1:4:3.40:3:0::DaikinAP07464:::::
 ```
 
-The `device` value is a colon-delimited record. Confirmed useful fields so far:
+`device` field is colon-delimited:
 
-| Index | Value | Meaning |
+| Index | Example | Meaning |
 |---|---|---|
-| `0` | `30050` | Device routing port |
+| `0` | `30050` | Cloud routing port (static) |
 | `4` | `3_1_0` | Firmware version |
 | `8` | `DaikinAP07464` | Device name |
 | `11` | `us` | Region |
@@ -119,13 +146,14 @@ The `device` value is a colon-delimited record. Confirmed useful fields so far:
 GET /common/basic_info?port=<port>&lpw=&port=<port>&apw=&id=&spw=
 ```
 
-Returns `ret=OK,type=aircon,reg=us,dst=0,ver=<fw>,rev=...,mac=<mac>,...`
+Returns: `ret=OK,type=aircon,reg=us,dst=0,ver=<fw>,rev=...,mac=<mac>,...`  
+Used internally to resolve the device MAC address.
 
 ---
 
 ## Aircon Control
 
-All control endpoints return comma-separated `key=value` pairs. Always check `ret=OK`.
+All control endpoints return comma-separated `key=value` text. Always validate `ret=OK`.
 
 ### Get Control Info
 
@@ -135,7 +163,9 @@ GET /aircon/get_control_info?port=<port>&id=<username>&apw=&spw=
 
 **Example response:**
 ```
-ret=OK,pow=1,mode=3,stemp=20.5,shum=0,f_rate=A,f_dir=0,f_dir_ud=0,f_dir_lr=0,dt1=22.0,dh1=0,dt2=M,dh2=0,dt3=20.5,dh3=0,dt4=25.0,dh4=0,dt6=--,dh6=0
+ret=OK,pow=1,mode=3,stemp=20.5,shum=0,f_rate=A,f_dir=0,f_dir_ud=0,f_dir_lr=0,
+dt1=22.0,dh1=0,dt2=M,dh2=0,dt3=20.5,dh3=0,dt4=25.0,dh4=0,dt6=--,dh6=0,
+dfr1=A,dfr2=A,dfr3=A,dfr4=4,dfr6=A
 ```
 
 ### Get Sensor Info
@@ -149,18 +179,20 @@ GET /aircon/get_sensor_info?port=<port>&id=<username>&apw=&spw=
 ret=OK,htemp=21.0,hhum=--,otemp=18.5,err=0
 ```
 
+`hhum` may be `--` when humidity sensor is not present.
+
 ### Set Control Info
 
 ```
-GET /aircon/set_control_info?port=<port>&pow=<pow>&mode=<mode>&stemp=<stemp>&shum=<shum>&f_rate=<f_rate>&f_dir_ud=<v>&f_dir_lr=<v>&dt<N>=<stemp>&dh<N>=0
+GET /aircon/set_control_info?port=<port>&mode=<N>&dt<N>=<stemp>&dh<N>=0&f_dir_ud=<v>&f_rate=<v>&shum=0&f_dir_lr=<v>&pow=<v>&stemp=<stemp>
 ```
 
-**Confirmed cool request:**
+**Confirmed cool example (mode=3):**
 ```
 GET /aircon/set_control_info?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A&shum=0&f_dir_lr=0&pow=1&stemp=20.5&dh3=0
 ```
 
-**Confirmed heat request:**
+**Confirmed heat example (mode=4):**
 ```
 GET /aircon/set_control_info?port=30050&mode=4&dh4=0&f_dir_ud=0&dt4=25.0&f_rate=4&shum=0&f_dir_lr=0&pow=1&stemp=25.0
 ```
@@ -180,44 +212,43 @@ ret=OK,adv=
 | `0` | Off |
 | `1` | On |
 
-### `mode`
-| Value | HA Mode | Notes |
-|---|---|---|
-| `1` | `auto` | Inferred |
-| `2` | `dry` | Inferred |
-| `3` | `cool` | **Confirmed** |
-| `4` | `heat` | **Confirmed** |
-| `6` | `fan_only` | Inferred |
+### `mode` — All Values Confirmed
+| Value | HA Mode |
+|---|---|
+| `1` | `auto` |
+| `2` | `dry` |
+| `3` | `cool` |
+| `4` | `heat` |
+| `6` | `fan_only` |
 
 ### `stemp` — Target Temperature
 | Value | Meaning |
 |---|---|
-| `20.5`, `20.0`, `25.0`, etc. | Temperature in °C (0.5° increments) |
+| `20.0`, `20.5`, `25.0`, etc. | °C, 0.5° increments |
 | `M` | Sentinel for dry mode |
 | `--` | Sentinel for fan-only mode |
 
-### `f_rate` — Fan Speed
-| Value | HA Fan Mode | Notes |
-|---|---|---|
-| `A` | `auto` | **Confirmed** |
-| `4` | `medium_low` | **Confirmed** |
-| `B` | `quiet` | Inferred |
-| `3` | `low` | Inferred |
-| `5` | `medium` | Inferred |
-| `6` | `medium_high` | Inferred |
-| `7` | `high` | Inferred |
+### `f_rate` — Fan Speed, All Values Confirmed
+| Value | HA Fan Mode |
+|---|---|
+| `A` | `auto` |
+| `B` | `quiet` |
+| `3` | `low` |
+| `4` | `medium_low` |
+| `5` | `medium` |
+| `6` | `medium_high` |
+| `7` | `high` |
 
 ### Swing Parameters
-
-| Parameter | Meaning | Status |
-|---|---|---|
-| `f_dir_ud` | Up/down swing | **Confirmed field name** |
-| `f_dir_lr` | Left/right swing | **Confirmed field name** |
-| `f_dir` | Combined/legacy direction field in `get_control_info` | Seen in responses |
+| Parameter | Meaning |
+|---|---|
+| `f_dir_ud` | Up/down vane direction |
+| `f_dir_lr` | Left/right vane direction |
+| `f_dir` | Combined direction field (present in `get_control_info` responses) |
 
 ### Mode-Specific Parameters
 
-Each mode uses a dedicated temperature/humidity parameter set:
+Each mode stores its own last-used setpoint. The active mode's `dtN`/`dhN` must be sent on every `set_control_info` call.
 
 | Mode | dt param | dh param |
 |---|---|---|
@@ -231,19 +262,25 @@ Each mode uses a dedicated temperature/humidity parameter set:
 
 ## Port
 
-All device endpoints require a `port=` query parameter. The port value `30050` was confirmed in all captured requests. This appears to be a static routing identifier within the Daikin cloud proxy, not a TCP port.
+`port=30050` appears in all device requests. This is a **cloud-side routing identifier**, not a TCP port. It is static per device and is parsed from field index 0 of the `device_list` response.
 
 ---
 
-## What Still Needs Capture
+## Capture Checklist
 
-- [x] Login response body — ✅ confirmed 2026-06-02
-- [x] `device_list` response body — ✅ confirmed 2026-06-02
-- [x] `set_control_info` response body — ✅ confirmed 2026-06-02 (`ret=OK,adv=`)
-- [x] Heat mode — ✅ confirmed as `mode=4`
-- [ ] Auto mode (confirm mode value)
-- [ ] Dry mode (confirm mode value)
-- [ ] Fan-only mode (confirm mode value)
-- [ ] Manual fan speeds `3`, `5`, `6`, `7`
-- [ ] Token refresh endpoint and response format
-- [ ] Any schedule/timer endpoints
+- [x] Login request + response
+- [x] Token refresh request + response
+- [x] `device_list` response
+- [x] `set_control_info` success response (`ret=OK,adv=`)
+- [x] Cool mode (`mode=3`)
+- [x] Heat mode (`mode=4`)
+- [x] All mode values confirmed (auto=1, dry=2, cool=3, heat=4, fan_only=6)
+- [x] `f_rate` auto (`A`) and medium_low (`4`) confirmed
+- [x] All `f_rate` values confirmed (A, B, 3, 4, 5, 6, 7)
+- [x] Swing parameters (`f_dir_ud`, `f_dir_lr`) confirmed
+- [x] Token rotation confirmed (both tokens change on every refresh)
+
+### Still Unknown
+- [ ] `f_dir_ud` / `f_dir_lr` valid value ranges and meaning (0 = off? range?)
+- [ ] Schedule/timer endpoints (if any)
+- [ ] Error response format for invalid params

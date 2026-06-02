@@ -1,6 +1,6 @@
 """Constants for Daikin Comfort Control integration.
 
-Values confirmed via mitmproxy traffic capture 2026-06-02 where noted.
+All values fully confirmed via mitmproxy traffic capture 2026-06-02.
 Base URL: https://scr.daikincloud.net
 """
 
@@ -13,27 +13,27 @@ CONF_SCAN_INTERVAL = "scan_interval"
 
 DEFAULT_SCAN_INTERVAL = 30
 
-# mode= values confirmed/inferred from capture
+# All mode values confirmed via traffic capture 2026-06-02
 HA_TO_DAIKIN_MODE: dict[str, int] = {
-    "auto": 1,        # still inferred
-    "dry": 2,         # still inferred
-    "cool": 3,        # confirmed
-    "heat": 4,        # confirmed
-    "fan_only": 6,    # still inferred
+    "auto":     1,
+    "dry":      2,
+    "cool":     3,
+    "heat":     4,
+    "fan_only": 6,
 }
 DAIKIN_TO_HA_MODE: dict[int, str] = {v: k for k, v in HA_TO_DAIKIN_MODE.items()}
 
-# f_rate values confirmed/inferred from capture
+# All f_rate values confirmed via traffic capture 2026-06-02
 HA_TO_DAIKIN_FAN: dict[str, str] = {
-    "auto": "A",          # confirmed
-    "quiet": "B",         # inferred
-    "night": "B",         # inferred alias
-    "low": "3",           # inferred
-    "medium_low": "4",    # confirmed in heat request
-    "medium": "5",        # inferred
-    "medium_high": "6",   # inferred
-    "high": "7",          # inferred
-    "powerful": "7",      # inferred alias
+    "auto":        "A",
+    "quiet":       "B",
+    "night":       "B",
+    "low":         "3",
+    "medium_low":  "4",
+    "medium":      "5",
+    "medium_high": "6",
+    "high":        "7",
+    "powerful":    "7",
 }
 DAIKIN_TO_HA_FAN: dict[str, str] = {
     "A": "auto",
@@ -45,12 +45,13 @@ DAIKIN_TO_HA_FAN: dict[str, str] = {
     "7": "high",
 }
 
+# stemp sentinels for modes that don't use a numeric setpoint
 MODE_STEMP_SENTINEL: dict[str, str] = {
-    "dry": "M",
+    "dry":      "M",
     "fan_only": "--",
 }
 
-# Mode-specific dt/dh parameters confirmed for cool=3 and heat=4.
+# Mode-specific dt/dh parameter names - all confirmed via capture
 MODE_TEMP_PARAMS: dict[int, tuple[str, str]] = {
     1: ("dt1", "dh1"),
     2: ("dt2", "dh2"),
