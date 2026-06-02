@@ -1,264 +1,186 @@
 # Traffic Capture Guide
 
-This guide explains how to capture HTTPS traffic from the Daikin Comfort Control Android app to obtain your `x-daikin-uid` and document the cloud API. It covers the pre-patched APK quickstart, the full DIY APK patching process, Frida SSL bypass injection, and mitmproxy in WireGuard mode.
-
-> **You only need to do this once.** Once you have your `x-daikin-uid`, the HA integration handles everything automatically and the phone setup is no longer needed.
+> How to intercept Daikin Comfort Control app traffic using mitmproxy to document the cloud API.
 
 ---
 
-## Quick Start — Pre-Patched APK
+## Setup
 
-We already built and tested a patched version of the Daikin Comfort Control APK with the Frida gadget injected. **You do not need to patch anything yourself.** Download it, install it, and skip straight to [Step 4](#step-4--start-mitmproxy-in-wireguard-mode).
+### Requirements
 
-> **Download:** [Releases → daikin-comfort-control-frida.apk](https://github.com/Tech-Morph/daikin_comfort_control/releases)
+- PC running mitmproxy (v12.x confirmed working)
+- Android device or emulator with Daikin Comfort Control app installed
+- Both devices on the same LAN segment
 
-The patched APK is functionally identical to the official app. The only difference is a Frida gadget shared library embedded in the APK that pauses on launch and waits for a script to be injected. Without the Frida script attached, the app behaves exactly like the original.
+### mitmproxy Setup
 
 ```bash
-# Uninstall the official app if present
-adb uninstall com.daikin.daikincomfortcontrol
+# Install
+pip install mitmproxy
 
-# Sideload the patched APK
-adb install daikin-comfort-control-frida.apk
+# Run the web UI (recommended for capture review)
+mitmweb --listen-port 8082
 ```
 
-> If you prefer to build the patched APK yourself from the original, follow the **Building the Patched APK** section below. Otherwise skip it entirely.
+Browse to `http://192.168.x.x:8082` from your browser.
+
+### Android Proxy Configuration
+
+1. On Android: **Settings → Wi-Fi → Long-press network → Modify → Advanced → Proxy → Manual**
+2. Set proxy host to your PC's LAN IP, port `8082`
+3. Install mitmproxy CA cert:
+   - Browse to `http://mitm.it` on the Android device
+   - Download and install the Android cert
+   - On Android 7+: **Settings → Security → Install from storage**
+
+### Android 7+ Certificate Trust (Required)
+
+Android 7+ restricts user-installed CA certs to system trust. The app must trust user CAs or you must root/use an emulator with a system-level cert injection.
+
+**Option A (Emulator — easiest):**
+```bash
+# Start emulator with writable system partition
+emulator -avd <name> -writable-system
+adb root
+adb remount
+adb push ~/.mitmproxy/mitmproxy-ca-cert.cer /system/etc/security/cacerts/<hash>.0
+adb reboot
+```
+
+**Option B (Network Security Config — app mod):**
+Decompile the APK with `apktool`, add a `network_security_config.xml` that trusts user CAs, recompile and sign.
 
 ---
 
-## Prerequisites
+## Confirmed Captures (2026-06-02)
 
-### Linux host
+### Auth Flow
 
-```bash
-# Python tools
-pip install mitmproxy frida-tools
+```
+POST https://scr.daikincloud.net/common/login
 
-# Android tools (only needed for DIY APK build)
-sudo apt install adb apktool zipalign openjdk-17-jdk
+Headers:
+  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
+  user-agent: okhttp/4.9.2
+  content-type: application/x-www-form-urlencoded
+  accept-encoding: gzip
 
-# Optional: download APKs without Google account
-pip install apkeep
+Body (URL-encoded):
+  grant_type=password
+  scope=smart_app
+  username=TechMorph
+  password=<redacted>
 ```
 
-### Android device
+### Device List
 
-- **Developer options enabled** — Settings → About Phone → tap Build Number 7×
-- **USB debugging enabled**
-- **Install unknown APKs enabled** — needed to sideload
-- **WireGuard app installed** — [F-Droid](https://f-droid.org/packages/com.wireguard.android/) or Play Store
-- Connected to Linux host via USB
+```
+GET https://scr.daikincloud.net/common/device_list
 
----
-
-## Building the Patched APK Yourself (Optional)
-
-Skip this entire section if you're using the pre-patched APK from Releases.
-
-### 1. Get the Official APK
-
-**Option A — Pull from device:**
-```bash
-adb shell pm list packages | grep daikin
-adb shell pm path com.daikin.daikincomfortcontrol
-adb pull /data/app/~~<hash>/com.daikin.daikincomfortcontrol-<hash>/base.apk daikin.apk
+Headers:
+  authentication: bearer <token>
+  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
+  user-agent: okhttp/4.9.2
+  accept-encoding: gzip
 ```
 
-**Option B — apkeep:**
-```bash
-apkeep -a com.daikin.daikincomfortcontrol -d google-play daikin.apk
+### Get Control Info
+
+```
+GET https://scr.daikincloud.net/aircon/get_control_info
+    ?port=30050&port=30050&apw=&id=TechMorph&spw=
+
+Headers:
+  authentication: bearer <token>
+  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
+  user-agent: okhttp/4.9.2
+  accept-encoding: gzip
 ```
 
-**Option C** — [APKMirror](https://www.apkmirror.com) or [APKPure](https://apkpure.com)
+### Set Control Info (Temperature Change to 20.5°C)
 
-### 2. Download Frida Gadget
+```
+GET https://scr.daikincloud.net/aircon/set_control_info
+    ?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A
+    &shum=0&f_dir_lr=0&pow=1&stemp=20.5&dh3=0
 
-```bash
-# Check device arch
-adb shell getprop ro.product.cpu.abi
-# Common values: arm64-v8a, armeabi-v7a, x86_64
-
-FRIDA_VERSION=$(frida --version)
-wget "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz"
-unxz frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz
-mv frida-gadget-${FRIDA_VERSION}-android-arm64.so libfrida-gadget.so
+Headers:
+  authentication: bearer <token>
+  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
+  user-agent: okhttp/4.9.2
+  accept-encoding: gzip
 ```
 
-### 3. Decompile, Inject, Repackage
+### Set Control Info (Temperature Change to 20.0°C)
 
-```bash
-apktool d daikin.apk -o daikin_patched/
-
-mkdir -p daikin_patched/lib/arm64-v8a
-cp libfrida-gadget.so daikin_patched/lib/arm64-v8a/libfrida-gadget.so
 ```
+GET https://scr.daikincloud.net/aircon/set_control_info
+    ?port=30050&mode=3&dt3=20.0&f_dir_ud=0&f_rate=A
+    &shum=0&f_dir_lr=0&pow=1&stemp=20.0&dh3=0
 
-Find the main Activity:
-```bash
-grep -A2 'MAIN' daikin_patched/AndroidManifest.xml
-```
-
-In that smali file, add these two lines at the **top of `onCreate`** before any other instruction:
-```smali
-const-string v0, "frida-gadget"
-invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
-```
-
-Repackage and sign:
-```bash
-apktool b daikin_patched/ -o daikin_frida.apk
-
-# Generate debug keystore (one-time)
-keytool -genkey -v -keystore debug.keystore -alias androiddebugkey \
-  -keyalg RSA -keysize 2048 -validity 10000 \
-  -storepass android -keypass android \
-  -dname "CN=Android Debug,O=Android,C=US"
-
-zipalign -v 4 daikin_frida.apk daikin_frida_aligned.apk
-apksigner sign \
-  --ks debug.keystore --ks-key-alias androiddebugkey \
-  --ks-pass pass:android --key-pass pass:android \
-  --out daikin_signed.apk daikin_frida_aligned.apk
-
-adb uninstall com.daikin.daikincomfortcontrol
-adb install daikin_signed.apk
+Headers:
+  authentication: bearer <token>
+  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
+  user-agent: okhttp/4.9.2
+  accept-encoding: gzip
 ```
 
 ---
 
-## Step 4 — Start mitmproxy in WireGuard Mode
+## Key Findings
 
-```bash
-cd /opt/daikin_integration
-
-mitmweb \
-  --mode wireguard \
-  --web-port 8083 \
-  --web-host 0.0.0.0 \
-  --ssl-insecure \
-  -s tools/daikin_filter.py
-```
-
-mitmweb prints a WireGuard config block in the terminal. Configure it on the phone:
-
-1. Open WireGuard app → tap **+** → **Scan QR code** (or Create from scratch and paste)
-2. Enable the tunnel — all phone traffic now routes through mitmproxy
-3. Open mitmweb in your browser at `http://<linux-ip>:8083`
-
-> mitmproxy regenerates WireGuard keys on every restart. If you restart mitmweb, re-import the WireGuard config on the phone.
-
----
-
-## Step 5 — Attach Frida and Inject SSL Bypass
-
-The patched app **freezes on the splash screen** waiting for Frida. This is expected.
-
-```bash
-# Forward the Frida gadget port over USB
-adb forward tcp:27042 tcp:27042
-
-# Launch the Daikin app on the phone — it will pause on the splash screen
-
-# Attach Frida and inject the bypass
-frida -H 127.0.0.1:27042 Gadget -l tools/ssl-bypass.js
-```
-
-Expected output in the Frida console:
-```
-[SSL Bypass] TrustManager + HostnameVerifier installed
-[SSL Bypass] OkHttp3 CertificatePinner hooked
-[SSL Bypass] All hooks installed - app SSL pinning disabled
-```
-
-The app will resume automatically. **Log in with your Daikin Comfort Control credentials.**
-
----
-
-## Step 6 — Extract Your UID
-
-The `daikin_filter.py` script prints the UID directly to stdout on the first request:
-
-```
-================================================================
-  POST  https://scr.daikincloud.net/common/login  ->  200
-  Time: 2026-05-19T07:15:22Z
-  x-daikin-uid   : 51952434f3074927863a37557c01a0bc
-  authentication : <redacted>
-  REQUEST BODY:
-    {
-      "grant_type": "password",
-      "username": "your@email.com",
-      "password": "<redacted>"
-    }
-================================================================
-```
-
-Copy the `x-daikin-uid` value — this is what you enter in the HA integration config flow.
-
-It also appears on every subsequent request (`/common/device_list`, `/aircon/get_control_info`, etc.) so you won't miss it.
-
-All captured traffic is saved to:
-- `daikin_api.log` — full timestamped log (tokens included — keep private)
-- `daikin_capture.json` — structured JSON array for post-processing
-
----
-
-## Step 7 — Capture Additional Endpoints (Optional)
-
-While the app is open, interact with controls to capture the full API surface:
-
-| Action | What gets captured |
+| Finding | Detail |
 |---|---|
-| Turn on / off | `GET /aircon/set_control_info?...&pow=1` or `pow=0` |
-| Change temperature | `...&stemp=22.0&dt3=22.0` |
-| Change fan speed | `...&f_rate=3&dfr3=3` |
-| Change HVAC mode | `...&mode=3` (1=auto, 2=dry, 3=cool, 4=heat, 6=fan) |
-| Poll state | `GET /aircon/get_control_info` |
-| Poll sensors | `GET /aircon/get_sensor_info` |
-| Token refresh | `POST /common/token_refresh` |
+| Real base URL | `https://scr.daikincloud.net` (not `api.daikinskyport.com`) |
+| Auth header name | `authentication` (non-standard — not `Authorization`) |
+| Token format | Long hex bearer token (~190 chars) |
+| Token TTL | `expires_in: "600"` (string, 10 minutes) |
+| Control method | `GET` (not `PUT`/`POST`) for set_control_info |
+| Response format | Comma-separated `key=value` pairs (not JSON) |
+| Port param | `port=30050` — static routing identifier in cloud proxy |
+| UID | Static per-adapter hex string in `x-daikin-uid` header |
 
 ---
 
-## Troubleshooting
+## What to Capture Next
 
-**App crashes immediately after patching**
-- Wrong smali target — try the `Application` subclass instead of the main `Activity`
-- Add `android:extractNativeLibs="true"` to the `<application>` tag in `AndroidManifest.xml`
-- Wrong gadget arch — re-check `adb shell getprop ro.product.cpu.abi`
+To fill in remaining unknowns, trigger each of these in the app while mitmproxy is running, then click the **Response** tab for each captured flow:
 
-**`frida: unable to connect to remote frida-server`**
-- Use capital-G `Gadget` — you're targeting the embedded gadget, not frida-server
-- Re-run `adb forward tcp:27042 tcp:27042` after reconnecting USB
-- Kill and relaunch the app, reattach Frida before the splash screen times out
+1. **Login response** — click the `POST /common/login` flow → Response tab
+   - Confirm field names (`access_token`, `refresh_token`, `expires_in`)
+   - Note exact `expires_in` type (string vs int)
 
-**TLS handshake failures in mitmweb for Daikin traffic**
-- Bypass didn't attach in time — kill the app, relaunch, reattach Frida first
-- Use `--pause` flag: `frida -H 127.0.0.1:27042 Gadget -l tools/ssl-bypass.js --pause` then type `%resume`
+2. **device_list response** — click `GET /common/device_list` → Response tab
+   - Capture the full response body to confirm device field structure
 
-**WireGuard active but no traffic in mitmweb**
-- Enable IP forwarding: `sudo sysctl -w net.ipv4.ip_forward=1`
-- mitmweb was restarted — keys changed, re-scan QR on phone
-- Verify mitmweb is listening: `ss -tlnp | grep 8083`
+3. **Mode change to Heat** — set app to Heat mode
+   - Confirm `mode=7` (or whatever value appears)
 
-**Certificate errors for non-Daikin apps**
-- Expected and harmless — other apps use their own pinning we don't bypass
-- Only `scr.daikincloud.net` traffic is needed
+4. **Mode change to Auto** — set app to Auto mode
+   - Confirm `mode=1`
 
----
+5. **Fan speed change** — tap each fan speed in the app
+   - Confirm `f_rate` values for Low / Medium / High
 
-## Tools Reference
+6. **Power off** — turn unit off in app
+   - Confirm `pow=0` in set_control_info
 
-| File | Purpose |
-|---|---|
-| [`tools/ssl-bypass.js`](../tools/ssl-bypass.js) | Frida script — disables SSL pinning across OkHttp3, TrustManager, Conscrypt, WebView |
-| [`tools/daikin_filter.py`](../tools/daikin_filter.py) | mitmproxy addon — filters, logs, and pretty-prints all Daikin API traffic |
+7. **set_control_info response** — check any set flow → Response tab
+   - Confirm `ret=OK` format
 
 ---
 
-## Security Notes
+## mitmproxy Export Tips
 
-- Uninstall the patched APK and reinstall the official app when capture is complete
-- **Never commit** `x-daikin-uid`, passwords, or captured tokens to version control
-- `daikin_api.log` and `daikin_capture.json` contain live tokens — both are in `.gitignore`
-- The UID is tied to the app installation — treat it like a credential
-- Run mitmweb only on a trusted local network
+```python
+# Save all flows to a file for offline analysis
+# In mitmweb: Flow List → select all → Download
+
+# Or from mitmproxy CLI:
+mitmproxy -r flows.bin  # replay/inspect saved flows
+```
+
+Filter to only Daikin traffic in mitmweb:
+```
+Filter: ~d daikincloud.net
+```

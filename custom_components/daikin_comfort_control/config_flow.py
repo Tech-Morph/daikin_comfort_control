@@ -1,96 +1,104 @@
+"""Config flow for Daikin Comfort Control."""
 from __future__ import annotations
 import logging
-import voluptuous as vol
-import aiohttp
+from typing import Any
 
+import aiohttp
+import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.const import CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import (
-    DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_UID,
-    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL,
-)
+from .const import DOMAIN, CONF_USERNAME, CONF_UID, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
 from .daikin_api import DaikinCloudClient, DaikinAuthError, DaikinAPIError
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_SCHEMA = vol.Schema({
-    vol.Required(CONF_USERNAME): str,
+    vol.Required(CONF_USERNAME, description={"suggested_value": "you@example.com"}): str,
     vol.Required(CONF_PASSWORD): str,
-    vol.Required(CONF_UID, description={"suggested_value": ""}): str,
+    vol.Required(
+        CONF_UID,
+        description={"suggested_value": "dcd2e719644c4716afc1f729e98b609c"},
+    ): str,
+    vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
 })
 
-OPTIONS_SCHEMA = vol.Schema({
-    vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(int, vol.Range(min=10, max=300)),
-})
 
-
-class DaikinComfortControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class DaikinComfortControlFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            session = aiohttp.ClientSession()
+            session = async_get_clientsession(self.hass)
+            client  = DaikinCloudClient(
+                username = user_input[CONF_USERNAME],
+                password = user_input[CONF_PASSWORD],
+                uid      = user_input[CONF_UID],
+                session  = session,
+            )
             try:
-                client = DaikinCloudClient(
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                    uid=user_input[CONF_UID],
-                    session=session,
-                )
                 await client.login()
                 devices = await client.get_devices()
                 if not devices:
                     errors["base"] = "no_devices"
                 else:
-                    await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+                    await self.async_set_unique_id(
+                        f"{DOMAIN}_{user_input[CONF_USERNAME]}"
+                    )
                     self._abort_if_unique_id_configured()
                     return self.async_create_entry(
                         title=f"Daikin ({user_input[CONF_USERNAME]})",
-                        data=user_input,
+                        data={
+                            CONF_USERNAME: user_input[CONF_USERNAME],
+                            CONF_PASSWORD: user_input[CONF_PASSWORD],
+                            CONF_UID:      user_input[CONF_UID],
+                        },
+                        options={
+                            CONF_SCAN_INTERVAL: user_input.get(
+                                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                            ),
+                        },
                     )
             except DaikinAuthError:
                 errors["base"] = "invalid_auth"
-            except DaikinAPIError:
+            except (DaikinAPIError, aiohttp.ClientError) as err:
+                _LOGGER.exception("Error during config flow: %s", err)
                 errors["base"] = "cannot_connect"
-            except aiohttp.ClientError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error during Daikin setup")
-                errors["base"] = "unknown"
-            finally:
-                await session.close()
 
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_SCHEMA,
             errors=errors,
-            description_placeholders={
-                "uid_hint": "Found in mitmproxy capture as x-daikin-uid header (e.g. 51952434f3074927863a37557c01a0bc)"
-            },
         )
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        return DaikinOptionsFlow(config_entry)
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "DaikinOptionsFlowHandler":
+        return DaikinOptionsFlowHandler(config_entry)
 
 
-class DaikinOptionsFlow(config_entries.OptionsFlow):
+class DaikinOptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
+        self.config_entry = config_entry
 
-    async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-
-        current_interval = self._config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        current = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Optional(CONF_SCAN_INTERVAL, default=current_interval): vol.All(int, vol.Range(min=10, max=300)),
+                vol.Optional(CONF_SCAN_INTERVAL, default=current): int,
             }),
         )
