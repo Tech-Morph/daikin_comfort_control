@@ -42,17 +42,26 @@ user-agent: okhttp/4.9.2
 accept-encoding: gzip
 ```
 
-**Response (JSON):**
+**Response — HTTP 200, `application/json;charset=UTF-8`:**
 
 ```json
 {
-  "access_token":  "<long bearer token>",
-  "refresh_token": "<refresh token>",
-  "expires_in":    "600"
+    "access_token":  "8890d3da1a576428aa5f4404721586e8...",
+    "refresh_token": "4e3f72cb9a7d757b5131613fda2b5c05...",
+    "expires_in":    "600"
 }
 ```
 
-> `expires_in` is returned as a **string**, not an integer. Token TTL is 600 seconds (10 minutes).
+**Confirmed response details (2026-06-02):**
+
+| Field | Type | Notes |
+|---|---|---|
+| `access_token` | string | Hex string, ~190 chars. **Not a JWT** (no `.` separators). |
+| `refresh_token` | string | Hex string, ~190 chars. Same format as access token. |
+| `expires_in` | string | `"600"` — returned as a **string**, not an integer. Token TTL = 10 minutes. |
+| `token_type` | — | **Field is absent.** The app hardcodes the `bearer` prefix. |
+
+**Server also sets a session cookie** (`JSESSIONID`) but the app ignores it entirely — all auth is via the bearer token header.
 
 ### Token Refresh
 
@@ -201,7 +210,7 @@ All device endpoints require a `port=` query parameter. The port value `30050` w
 
 ## What Still Needs Capture
 
-- [ ] Login response body (confirm field names, `expires_in` type, any `token_type` field)
+- [x] Login response body — ✅ confirmed 2026-06-02
 - [ ] `device_list` response body (confirm field structure, number of devices)
 - [ ] `set_control_info` response body (confirm `ret=OK` format)
 - [ ] Mode changes: heat, auto, dry, fan_only (confirm mode values 1, 2, 6, 7)
