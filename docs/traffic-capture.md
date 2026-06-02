@@ -1,186 +1,98 @@
-# Traffic Capture Guide
+# Traffic Capture Guide — Daikin Comfort Control
 
-> How to intercept Daikin Comfort Control app traffic using mitmproxy to document the cloud API.
+This guide explains how to capture HTTPS traffic from the Daikin Comfort Control mobile app using mitmproxy. This is needed to obtain your `x-daikin-uid` and verify API behavior.
+
+---
+
+## Requirements
+
+- A PC or VM running mitmproxy
+- An Android device (or emulator) with the Daikin Comfort Control app installed
+- Both devices on the same Wi-Fi network
 
 ---
 
 ## Setup
 
-### Requirements
-
-- PC running mitmproxy (v12.x confirmed working)
-- Android device or emulator with Daikin Comfort Control app installed
-- Both devices on the same LAN segment
-
-### mitmproxy Setup
+### 1. Install mitmproxy
 
 ```bash
-# Install
 pip install mitmproxy
+# or download from https://mitmproxy.org
+```
 
-# Run the web UI (recommended for capture review)
+### 2. Start mitmproxy web UI
+
+```bash
 mitmweb --listen-port 8082
 ```
 
-Browse to `http://192.168.x.x:8082` from your browser.
+This opens the web UI at `http://127.0.0.1:8081`.
 
-### Android Proxy Configuration
+### 3. Configure Android proxy
 
-1. On Android: **Settings → Wi-Fi → Long-press network → Modify → Advanced → Proxy → Manual**
-2. Set proxy host to your PC's LAN IP, port `8082`
-3. Install mitmproxy CA cert:
-   - Browse to `http://mitm.it` on the Android device
-   - Download and install the Android cert
-   - On Android 7+: **Settings → Security → Install from storage**
+1. On your Android device: **Settings → Wi-Fi → long-press your network → Modify → Advanced**
+2. Set proxy to **Manual**
+3. Hostname: your PC’s local IP (e.g. `192.168.1.x`)
+4. Port: `8082`
 
-### Android 7+ Certificate Trust (Required)
+### 4. Install mitmproxy CA certificate on Android
 
-Android 7+ restricts user-installed CA certs to system trust. The app must trust user CAs or you must root/use an emulator with a system-level cert injection.
+1. With proxy configured, open the browser on Android and go to `mitm.it`
+2. Download and install the Android certificate
+3. Trust it under **Settings → Security → Trusted Credentials → User**
 
-**Option A (Emulator — easiest):**
-```bash
-# Start emulator with writable system partition
-emulator -avd <name> -writable-system
-adb root
-adb remount
-adb push ~/.mitmproxy/mitmproxy-ca-cert.cer /system/etc/security/cacerts/<hash>.0
-adb reboot
-```
-
-**Option B (Network Security Config — app mod):**
-Decompile the APK with `apktool`, add a `network_security_config.xml` that trusts user CAs, recompile and sign.
+> **Android 7+ note:** Apps targeting API 24+ do not trust user-installed CAs by default. You may need a rooted device, an older Android version, or an Android emulator with a writable system partition to intercept app traffic.
 
 ---
 
-## Confirmed Captures (2026-06-02)
+## Capturing Traffic
 
-### Auth Flow
+1. Open the Daikin Comfort Control app
+2. Navigate to your device and interact (change mode, temperature, fan speed)
+3. Switch to mitmproxy web UI and look for requests to `scr.daikincloud.net`
 
-```
-POST https://scr.daikincloud.net/common/login
+### Key values to capture
 
-Headers:
-  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
-  user-agent: okhttp/4.9.2
-  content-type: application/x-www-form-urlencoded
-  accept-encoding: gzip
-
-Body (URL-encoded):
-  grant_type=password
-  scope=smart_app
-  username=TechMorph
-  password=<redacted>
-```
-
-### Device List
-
-```
-GET https://scr.daikincloud.net/common/device_list
-
-Headers:
-  authentication: bearer <token>
-  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
-  user-agent: okhttp/4.9.2
-  accept-encoding: gzip
-```
-
-### Get Control Info
-
-```
-GET https://scr.daikincloud.net/aircon/get_control_info
-    ?port=30050&port=30050&apw=&id=TechMorph&spw=
-
-Headers:
-  authentication: bearer <token>
-  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
-  user-agent: okhttp/4.9.2
-  accept-encoding: gzip
-```
-
-### Set Control Info (Temperature Change to 20.5°C)
-
-```
-GET https://scr.daikincloud.net/aircon/set_control_info
-    ?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A
-    &shum=0&f_dir_lr=0&pow=1&stemp=20.5&dh3=0
-
-Headers:
-  authentication: bearer <token>
-  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
-  user-agent: okhttp/4.9.2
-  accept-encoding: gzip
-```
-
-### Set Control Info (Temperature Change to 20.0°C)
-
-```
-GET https://scr.daikincloud.net/aircon/set_control_info
-    ?port=30050&mode=3&dt3=20.0&f_dir_ud=0&f_rate=A
-    &shum=0&f_dir_lr=0&pow=1&stemp=20.0&dh3=0
-
-Headers:
-  authentication: bearer <token>
-  x-daikin-uid: dcd2e719644c4716afc1f729e98b609c
-  user-agent: okhttp/4.9.2
-  accept-encoding: gzip
-```
-
----
-
-## Key Findings
-
-| Finding | Detail |
+| Value | Where to find it |
 |---|---|
-| Real base URL | `https://scr.daikincloud.net` (not `api.daikinskyport.com`) |
-| Auth header name | `authentication` (non-standard — not `Authorization`) |
-| Token format | Long hex bearer token (~190 chars) |
-| Token TTL | `expires_in: "600"` (string, 10 minutes) |
-| Control method | `GET` (not `PUT`/`POST`) for set_control_info |
-| Response format | Comma-separated `key=value` pairs (not JSON) |
-| Port param | `port=30050` — static routing identifier in cloud proxy |
-| UID | Static per-adapter hex string in `x-daikin-uid` header |
+| `x-daikin-uid` | Any request header to `scr.daikincloud.net` |
+| `access_token` | Response body of `POST /common/login` |
+| `refresh_token` | Response body of `POST /common/login` |
+
+**The `x-daikin-uid` is the only value you need to copy.** It is a static hex string tied to your adapter hardware and does not change. Example format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` (32 hex chars).
 
 ---
 
-## What to Capture Next
+## Example Flow
 
-To fill in remaining unknowns, trigger each of these in the app while mitmproxy is running, then click the **Response** tab for each captured flow:
+After app login you will see a `POST /common/login` request. Click it in mitmproxy → **Request** tab to see the form body, **Response** tab to see the tokens.
 
-1. **Login response** — click the `POST /common/login` flow → Response tab
-   - Confirm field names (`access_token`, `refresh_token`, `expires_in`)
-   - Note exact `expires_in` type (string vs int)
+All subsequent requests to `scr.daikincloud.net` will include:
 
-2. **device_list response** — click `GET /common/device_list` → Response tab
-   - Capture the full response body to confirm device field structure
-
-3. **Mode change to Heat** — set app to Heat mode
-   - Confirm `mode=7` (or whatever value appears)
-
-4. **Mode change to Auto** — set app to Auto mode
-   - Confirm `mode=1`
-
-5. **Fan speed change** — tap each fan speed in the app
-   - Confirm `f_rate` values for Low / Medium / High
-
-6. **Power off** — turn unit off in app
-   - Confirm `pow=0` in set_control_info
-
-7. **set_control_info response** — check any set flow → Response tab
-   - Confirm `ret=OK` format
+```
+authentication: bearer <access_token>
+x-daikin-uid: <your_uid>
+```
 
 ---
 
-## mitmproxy Export Tips
+## Export Flows
 
-```python
-# Save all flows to a file for offline analysis
-# In mitmweb: Flow List → select all → Download
+To save all captured flows for later analysis:
 
-# Or from mitmproxy CLI:
-mitmproxy -r flows.bin  # replay/inspect saved flows
+```bash
+# In mitmweb: File → Save
+# Or from CLI:
+mitmproxy -r flows.bin
 ```
 
-Filter to only Daikin traffic in mitmweb:
-```
-Filter: ~d daikincloud.net
-```
+---
+
+## Security Notes
+
+- **Do not share your `access_token` or `refresh_token`** — they grant full control of your AC unit
+- **Do not share your `x-daikin-uid`** — it is tied to your hardware
+- **Do not commit credentials to version control** — use HA’s config entry storage instead
+- Tokens expire after 10 minutes; the integration handles refresh automatically
+- The `x-daikin-uid` is the only value that needs to be entered into the integration config flow

@@ -1,10 +1,10 @@
 # Daikin Comfort Control — API Documentation
 
-> **Status:** ✅ Fully confirmed via mitmproxy traffic capture · 2026-06-02  
-> **Device:** Daikin FTXM12WVJU9 · Adapter: BRP069C4x · FW: 3.1.0  
-> **App:** Daikin Comfort Control (Android) · `okhttp/4.9.2`
+> **Status:** ✅ Fully confirmed via mitmproxy traffic capture  
+> **Device tested:** Daikin FTXM-series mini-split · Adapter: BRP069C4x · FW: 3.x  
+> **App:** Daikin Comfort Control (Android/iOS) · HTTP client: `okhttp/4.9.2`
 
-All endpoints, parameters, and response formats have been confirmed by direct traffic capture. No inferred values remain for core functionality.
+All endpoints, parameters, and response formats confirmed by direct traffic capture. No inferred values remain for core functionality.
 
 ---
 
@@ -14,7 +14,7 @@ All endpoints, parameters, and response formats have been confirmed by direct tr
 https://scr.daikincloud.net
 ```
 
-> Note: Earlier assumptions pointed to `api.daikinskyport.com`. Traffic capture confirmed the actual host is `scr.daikincloud.net`.
+> **Note:** Earlier community assumptions pointed to `api.daikinskyport.com`. Traffic capture confirms the actual host is `scr.daikincloud.net`.
 
 ---
 
@@ -27,41 +27,40 @@ POST /common/login
 Content-Type: application/x-www-form-urlencoded
 ```
 
+**Request headers:**
+```
+x-daikin-uid: YOUR_DEVICE_UID
+user-agent: okhttp/4.9.2
+accept-encoding: gzip
+```
+
 **Request body:**
 
 | Field | Value |
 |---|---|
 | `grant_type` | `password` |
 | `scope` | `smart_app` |
-| `username` | Daikin account email |
-| `password` | Daikin account password |
-
-**Request headers:**
-
-```
-x-daikin-uid: <device-uid>
-user-agent: okhttp/4.9.2
-accept-encoding: gzip
-```
+| `username` | Your Daikin Comfort Control email |
+| `password` | Your Daikin Comfort Control password |
 
 **Response — HTTP 200, `application/json;charset=UTF-8`:**
 
 ```json
 {
-    "access_token":  "8890d3da1a576428aa5f4404721586e8...",
-    "refresh_token": "4e3f72cb9a7d757b5131613fda2b5c05...",
+    "access_token":  "<hex string, ~190 chars>",
+    "refresh_token": "<hex string, ~190 chars>",
     "expires_in":    "600"
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `access_token` | string | Hex string, ~190 chars. Not a JWT. |
-| `refresh_token` | string | Hex string, ~190 chars. Same format. |
-| `expires_in` | string | Always `"600"` (string, not integer). Token TTL = 10 minutes. |
-| `token_type` | — | **Absent.** The app hardcodes the `bearer` prefix. |
+| `access_token` | string | Hex string, not a JWT |
+| `refresh_token` | string | Hex string, same format |
+| `expires_in` | string | Always `"600"` (string, not integer) — TTL is 10 minutes |
+| `token_type` | — | **Absent.** The app hardcodes the `bearer` prefix |
 
-Server also sets a `JSESSIONID` cookie; the app ignores it entirely.
+The server also sets a `JSESSIONID` cookie which the app ignores entirely.
 
 ---
 
@@ -72,22 +71,21 @@ POST /common/token_refresh
 Content-Type: application/x-www-form-urlencoded
 ```
 
-**Request body:**
-
-| Field | Value |
-|---|---|
-| `grant_type` | `refresh_token` |
-| `refresh_token` | Current refresh token |
-
 **Request headers:**
-
 ```
-x-daikin-uid: <device-uid>
+x-daikin-uid: YOUR_DEVICE_UID
 user-agent: okhttp/4.9.2
 accept-encoding: gzip
 ```
 
 > ⚠️ No `authentication` header is sent for this request — only `x-daikin-uid`.
+
+**Request body:**
+
+| Field | Value |
+|---|---|
+| `grant_type` | `refresh_token` |
+| `refresh_token` | Your current refresh token |
 
 **Response — identical schema to login:**
 
@@ -105,16 +103,16 @@ accept-encoding: gzip
 
 ## Auth Headers (All Other Requests)
 
-> ⚠️ The authentication header uses the non-standard name `authentication` (not `Authorization`).
+> ⚠️ The header name is `authentication` (non-standard — **not** the RFC `Authorization` header).
 
 ```
 authentication: bearer <access_token>
-x-daikin-uid: <device-uid>
+x-daikin-uid: YOUR_DEVICE_UID
 user-agent: okhttp/4.9.2
 accept-encoding: gzip
 ```
 
-The `x-daikin-uid` is a static hex string tied to the adapter (e.g. `dcd2e719644c4716afc1f729e98b609c`).
+`x-daikin-uid` is a static hex string tied to the Wi-Fi adapter. Find it by capturing app traffic (see [traffic-capture.md](traffic-capture.md)).
 
 ---
 
@@ -126,18 +124,18 @@ The `x-daikin-uid` is a static hex string tied to the adapter (e.g. `dcd2e719644
 GET /common/device_list
 ```
 
-**Confirmed response:**
+**Confirmed response format:**
 ```
-ret=OK,ip=71.63.249.75,device=30050:47:0:aircon:3_1_0:1:0:0:DaikinAP07464:3:polling:us:16:0:1:4:3.40:3:0::DaikinAP07464:::::
+ret=OK,ip=<your_public_ip>,device=30050:47:0:aircon:3_1_0:1:0:0:<DeviceName>:3:polling:us:16:0:1:4:3.40:3:0::<DeviceName>:::::
 ```
 
 `device` field is colon-delimited:
 
 | Index | Example | Meaning |
 |---|---|---|
-| `0` | `30050` | Cloud routing port (static) |
+| `0` | `30050` | Cloud routing port (static per device) |
 | `4` | `3_1_0` | Firmware version |
-| `8` | `DaikinAP07464` | Device name |
+| `8` | `DaikinAP07464` | Device display name |
 | `11` | `us` | Region |
 
 ### Basic Info
@@ -179,7 +177,7 @@ GET /aircon/get_sensor_info?port=<port>&id=<username>&apw=&spw=
 ret=OK,htemp=21.0,hhum=--,otemp=18.5,err=0
 ```
 
-`hhum` may be `--` when humidity sensor is not present.
+`hhum` may be `--` when no humidity sensor is fitted to the adapter.
 
 ### Set Control Info
 
@@ -187,17 +185,17 @@ ret=OK,htemp=21.0,hhum=--,otemp=18.5,err=0
 GET /aircon/set_control_info?port=<port>&mode=<N>&dt<N>=<stemp>&dh<N>=0&f_dir_ud=<v>&f_rate=<v>&shum=0&f_dir_lr=<v>&pow=<v>&stemp=<stemp>
 ```
 
-**Confirmed cool example (mode=3):**
+**Cool example (mode=3):**
 ```
 GET /aircon/set_control_info?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A&shum=0&f_dir_lr=0&pow=1&stemp=20.5&dh3=0
 ```
 
-**Confirmed heat example (mode=4):**
+**Heat example (mode=4):**
 ```
 GET /aircon/set_control_info?port=30050&mode=4&dh4=0&f_dir_ud=0&dt4=25.0&f_rate=4&shum=0&f_dir_lr=0&pow=1&stemp=25.0
 ```
 
-**Confirmed success response:**
+**Success response:**
 ```
 ret=OK,adv=
 ```
@@ -213,7 +211,7 @@ ret=OK,adv=
 | `1` | On |
 
 ### `mode` — All Values Confirmed
-| Value | HA Mode |
+| Value | HA HVAC Mode |
 |---|---|
 | `1` | `auto` |
 | `2` | `dry` |
@@ -242,13 +240,13 @@ ret=OK,adv=
 ### Swing Parameters
 | Parameter | Meaning |
 |---|---|
-| `f_dir_ud` | Up/down vane direction |
-| `f_dir_lr` | Left/right vane direction |
-| `f_dir` | Combined direction field (present in `get_control_info` responses) |
+| `f_dir_ud` | Up/down vane position |
+| `f_dir_lr` | Left/right vane position |
+| `f_dir` | Combined direction (present in `get_control_info` response) |
 
-### Mode-Specific Parameters
+### Mode-Specific Temperature Parameters
 
-Each mode stores its own last-used setpoint. The active mode's `dtN`/`dhN` must be sent on every `set_control_info` call.
+Each mode stores its own last-used setpoint. The active mode’s `dtN`/`dhN` must be included in every `set_control_info` call.
 
 | Mode | dt param | dh param |
 |---|---|---|
@@ -260,27 +258,24 @@ Each mode stores its own last-used setpoint. The active mode's `dtN`/`dhN` must 
 
 ---
 
-## Port
+## Port Parameter
 
-`port=30050` appears in all device requests. This is a **cloud-side routing identifier**, not a TCP port. It is static per device and is parsed from field index 0 of the `device_list` response.
+`port=30050` appears in all device requests. This is a **cloud-side routing identifier**, not a TCP port. It is static per device and parsed from index 0 of the `device_list` response.
 
 ---
 
 ## Capture Checklist
 
 - [x] Login request + response
-- [x] Token refresh request + response
-- [x] `device_list` response
+- [x] Token refresh request + response (both tokens rotate)
+- [x] `device_list` response format
 - [x] `set_control_info` success response (`ret=OK,adv=`)
-- [x] Cool mode (`mode=3`)
-- [x] Heat mode (`mode=4`)
-- [x] All mode values confirmed (auto=1, dry=2, cool=3, heat=4, fan_only=6)
-- [x] `f_rate` auto (`A`) and medium_low (`4`) confirmed
-- [x] All `f_rate` values confirmed (A, B, 3, 4, 5, 6, 7)
-- [x] Swing parameters (`f_dir_ud`, `f_dir_lr`) confirmed
-- [x] Token rotation confirmed (both tokens change on every refresh)
+- [x] All mode values (auto=1, dry=2, cool=3, heat=4, fan_only=6)
+- [x] All `f_rate` values (A, B, 3, 4, 5, 6, 7)
+- [x] Swing parameters (`f_dir_ud`, `f_dir_lr`)
+- [x] Token rotation confirmed
 
 ### Still Unknown
-- [ ] `f_dir_ud` / `f_dir_lr` valid value ranges and meaning (0 = off? range?)
+- [ ] `f_dir_ud` / `f_dir_lr` valid value ranges (swing = `S`? range 0–5?)
 - [ ] Schedule/timer endpoints (if any)
-- [ ] Error response format for invalid params
+- [ ] Error response format for invalid parameters
