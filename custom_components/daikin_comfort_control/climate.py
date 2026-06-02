@@ -9,7 +9,7 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACMode,
 )
-from homeassistant.components.climate.const import FAN_AUTO, FAN_HIGH, FAN_LOW, FAN_MEDIUM, FAN_OFF
+from homeassistant.components.climate.const import FAN_AUTO, FAN_HIGH, FAN_LOW, FAN_MEDIUM
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
@@ -17,13 +17,12 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, DAIKIN_TO_HA_FAN, HA_TO_DAIKIN_FAN
+from .const import DOMAIN, DAIKIN_TO_HA_FAN
 from .coordinator import DaikinCoordinator
 from .daikin_api import DaikinAPIError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Daikin fan speed labels - extend HA built-ins with custom strings
 FAN_QUIET       = "quiet"
 FAN_MEDIUM_LOW  = "medium_low"
 FAN_MEDIUM_HIGH = "medium_high"
@@ -54,24 +53,25 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Daikin climate entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    entities = []
-    for port, coordinator in data["coordinators"].items():
-        entities.append(DaikinClimateEntity(coordinator))
+    entities = [
+        DaikinClimateEntity(coordinator)
+        for coordinator in data["coordinators"].values()
+    ]
     async_add_entities(entities)
 
 
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     """Represents a single Daikin mini-split unit."""
 
-    _attr_temperature_unit      = UnitOfTemperature.CELSIUS
+    _attr_temperature_unit        = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
-    _attr_min_temp              = 17.5
-    _attr_max_temp              = 32.5
-    _attr_hvac_modes            = HVAC_MODES
-    _attr_fan_modes             = FAN_MODES
-    _attr_supported_features    = (
+    # 17.5 C / 32.5 C gives clean buffer around 64 F / 90 F after unit conversion
+    _attr_min_temp                = 17.5
+    _attr_max_temp                = 32.5
+    _attr_hvac_modes              = HVAC_MODES
+    _attr_fan_modes               = FAN_MODES
+    _attr_supported_features      = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.TURN_ON
@@ -94,7 +94,7 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def _state(self):
-        return self.coordinator.data
+        return self.coordinator.data.state
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -121,9 +121,11 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose outdoor temp — kept as raw °C; sensor.py provides the
+        properly unit-converted sensor entity."""
         attrs: dict[str, Any] = {}
         if self._state.outdoor_temp != 0.0:
-            attrs["outdoor_temperature"] = self._state.outdoor_temp
+            attrs["outdoor_temperature_c"] = self._state.outdoor_temp
         return attrs
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -163,8 +165,7 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     async def async_turn_on(self) -> None:
         await self.async_set_hvac_mode(
             DAIKIN_TO_HVAC.get(self._state.mode, HVACMode.COOL)
-            if self._state.mode
-            else HVACMode.COOL
+            if self._state.mode else HVACMode.COOL
         )
 
     async def async_turn_off(self) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
@@ -12,7 +13,16 @@ from .daikin_api import DaikinCloudClient, DaikinDevice, DaikinState, DaikinAPIE
 _LOGGER = logging.getLogger(__name__)
 
 
-class DaikinCoordinator(DataUpdateCoordinator[DaikinState]):
+@dataclass
+class DaikinData:
+    """Combined state + raw control_info for a single device poll cycle."""
+    state: DaikinState
+    # Raw key=value dict from get_control_info, used by sensor platform
+    # for values not promoted to DaikinState (e.g. f_dir_ud, f_dir_lr)
+    raw_control: dict[str, str]
+
+
+class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
     """Polls a single Daikin device and exposes its state."""
 
     def __init__(
@@ -31,10 +41,11 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinState]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
-    async def _async_update_data(self) -> DaikinState:
+    async def _async_update_data(self) -> DaikinData:
         """Fetch latest state from the cloud API."""
         try:
-            return await self.client.get_state(self.device)
+            state, raw_control = await self.client.get_state_with_raw(self.device)
+            return DaikinData(state=state, raw_control=raw_control)
         except DaikinAuthError as err:
             raise UpdateFailed(f"Auth error: {err}") from err
         except DaikinAPIError as err:
