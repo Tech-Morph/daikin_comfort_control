@@ -7,12 +7,13 @@ Confirmed via mitmproxy traffic capture (2026-06-02):
               Body: grant_type=password&scope=smart_app&username=<u>&password=<p>
               Response: JSON with access_token, refresh_token, expires_in (str "600")
   Auth hdrs : authentication: bearer <token>   <- non-standard header name
-              x-daikin-uid: <static uid, e.g. dcd2e719644c4716afc1f729e98b609c>
+              x-daikin-uid: <static uid>
   User-Agent: okhttp/4.9.2
   Device list: GET /common/device_list
   Poll      : GET /aircon/get_control_info?port=30050&id=<username>&apw=&spw=
   Sensor    : GET /aircon/get_sensor_info?port=30050&id=<username>&apw=&spw=
   Control   : GET /aircon/set_control_info?port=30050&pow=&mode=&stemp=&...
+  Success   : ret=OK,adv=
   Token TTL : 600 s -> refresh 30 s before expiry via /common/token_refresh
 """
 from __future__ import annotations
@@ -46,6 +47,7 @@ class DaikinDevice:
     mac: str
     uid: str
     fw_ver: str
+    region: str = ""
 
 
 @dataclass
@@ -69,7 +71,6 @@ class DaikinAPIError(Exception):
 
 
 def _parse_kv(text: str) -> dict[str, str]:
-    """Parse Daikin comma-separated key=value response format."""
     result: dict[str, str] = {}
     for pair in text.strip().split(","):
         if "=" in pair:
@@ -79,7 +80,7 @@ def _parse_kv(text: str) -> dict[str, str]:
 
 
 class DaikinCloudClient:
-    """Async client for the Daikin Comfort Control (Skyport/scr) cloud API."""
+    """Async client for the Daikin Comfort Control cloud API."""
 
     def __init__(
         self,
@@ -98,23 +99,21 @@ class DaikinCloudClient:
 
     def _headers(self, *, auth: bool = True) -> dict[str, str]:
         h: dict[str, str] = {
-            "x-daikin-uid":    self._uid,
-            "user-agent":      _UA,
+            "x-daikin-uid": self._uid,
+            "user-agent": _UA,
             "accept-encoding": "gzip",
         }
         if auth and self._access_token:
-            # Non-standard header name confirmed in traffic capture
             h["authentication"] = f"bearer {self._access_token}"
         return h
 
     async def login(self) -> None:
-        """Authenticate and store tokens."""
         url = f"{BASE_URL}/common/login"
         payload = {
             "grant_type": "password",
-            "scope":      "smart_app",
-            "username":   self._username,
-            "password":   self._password,
+            "scope": "smart_app",
+            "username": self._username,
+            "password": self._password,
         }
         try:
             async with self._session.post(
@@ -129,18 +128,16 @@ class DaikinCloudClient:
         except aiohttp.ClientError as err:
             raise DaikinAuthError(f"Network error during login: {err}") from err
 
-        self._access_token  = data["access_token"]
+        self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token")
-        # expires_in is returned as string "600" per capture
         expires_in = int(data.get("expires_in", 600))
         self._token_expiry = time.monotonic() + expires_in - 30
         _LOGGER.debug("Daikin login OK, token expires in %ss", expires_in)
 
     async def _refresh_access_token(self) -> None:
-        """Attempt token refresh; fall back to full re-login on failure."""
         url = f"{BASE_URL}/common/token_refresh"
         payload = {
-            "grant_type":    "refresh_token",
+            "grant_type": "refresh_token",
             "refresh_token": self._refresh_token,
         }
         try:
@@ -148,7 +145,7 @@ class DaikinCloudClient:
                 url,
                 data=payload,
                 headers={
-                    "user-agent":   _UA,
+                    "user-agent": _UA,
                     "x-daikin-uid": self._uid,
                     "content-type": "application/x-www-form-urlencoded",
                 },
@@ -164,14 +161,13 @@ class DaikinCloudClient:
             await self.login()
             return
 
-        self._access_token  = data["access_token"]
+        self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token", self._refresh_token)
         expires_in = int(data.get("expires_in", 600))
         self._token_expiry = time.monotonic() + expires_in - 30
         _LOGGER.debug("Daikin token refreshed")
 
     async def ensure_token(self) -> None:
-        """Ensure a valid token exists, refreshing if needed."""
         if time.monotonic() >= self._token_expiry:
             if self._refresh_token:
                 await self._refresh_access_token()
@@ -179,7 +175,6 @@ class DaikinCloudClient:
                 await self.login()
 
     async def _get(self, path: str) -> str:
-        """Authenticated GET, retries once after 401."""
         url = f"{BASE_URL}{path}"
         async with self._session.get(url, headers=self._headers(), ssl=True) as resp:
             text = await resp.text()
@@ -197,26 +192,35 @@ class DaikinCloudClient:
             return text
 
     async def get_devices(self) -> list[DaikinDevice]:
-        """Return list of registered devices from /common/device_list."""
         await self.ensure_token()
         text = await self._get("/common/device_list")
         kv = _parse_kv(text)
-        devices: list[DaikinDevice] = []
+        if kv.get("ret") != "OK":
+            raise DaikinAPIError(f"device_list failed: {text[:200]}")
 
+        devices: list[DaikinDevice] = []
         raw_device = kv.get("device", "")
         if raw_device:
             fields = raw_device.split(":")
-            port = fields[0] if fields else "30050"
+            port = fields[0] if len(fields) > 0 else "30050"
+            fw_ver = fields[4] if len(fields) > 4 else ""
             name = fields[8] if len(fields) > 8 else "DaikinAC"
+            region = fields[11] if len(fields) > 11 else ""
             basic = await self._get_basic_info(port)
-            mac  = basic.get("mac", port)
-            ver  = basic.get("ver", "")
+            mac = basic.get("mac", port)
             devices.append(
-                DaikinDevice(port=port, name=name, mac=mac, uid=self._uid, fw_ver=ver)
+                DaikinDevice(
+                    port=port,
+                    name=name,
+                    mac=mac,
+                    uid=self._uid,
+                    fw_ver=fw_ver,
+                    region=region,
+                )
             )
 
         if not devices:
-            _LOGGER.error("No devices found in device_list. Raw response: %s", text[:500])
+            raise DaikinAPIError(f"No devices found in device_list: {text[:500]}")
         return devices
 
     async def _get_basic_info(self, port: str) -> dict[str, str]:
@@ -226,9 +230,8 @@ class DaikinCloudClient:
         return _parse_kv(text)
 
     async def get_state(self, device: DaikinDevice) -> DaikinState:
-        """Fetch control + sensor info concurrently and return unified state."""
         await self.ensure_token()
-        ctrl_task   = asyncio.create_task(self._get_control_info(device.port))
+        ctrl_task = asyncio.create_task(self._get_control_info(device.port))
         sensor_task = asyncio.create_task(self._get_sensor_info(device.port))
         ctrl, sensor = await asyncio.gather(ctrl_task, sensor_task)
 
@@ -259,14 +262,14 @@ class DaikinCloudClient:
             outdoor_temp = 0.0
 
         return DaikinState(
-            power           = ctrl.get("pow") == "1",
-            mode            = mode_str,
-            target_temp     = target_temp,
-            indoor_temp     = indoor_temp,
-            indoor_humidity = indoor_humidity,
-            outdoor_temp    = outdoor_temp,
-            fan_rate        = fan_rate,
-            fan_dir         = int(ctrl.get("f_dir", 0) or 0),
+            power=ctrl.get("pow") == "1",
+            mode=mode_str,
+            target_temp=target_temp,
+            indoor_temp=indoor_temp,
+            indoor_humidity=indoor_humidity,
+            outdoor_temp=outdoor_temp,
+            fan_rate=fan_rate,
+            fan_dir=int(ctrl.get("f_dir", 0) or 0),
         )
 
     async def _get_control_info(self, port: str) -> dict[str, str]:
@@ -297,7 +300,6 @@ class DaikinCloudClient:
         fan_rate: str | None = None,
         fan_dir: int | None = None,
     ) -> None:
-        """Send set_control_info. Reads current state first to fill unset params."""
         await self.ensure_token()
         current = await self._get_control_info(device.port)
 
@@ -316,8 +318,10 @@ class DaikinCloudClient:
             if fan_rate is not None
             else current.get("f_rate", "A")
         )
-        fdir_val  = str(fan_dir) if fan_dir is not None else current.get("f_dir", "0")
-        shum_val  = current.get("shum", "0")
+        shum_val = current.get("shum", "0")
+        fdir_val = str(fan_dir) if fan_dir is not None else current.get("f_dir", "0")
+        fdir_ud_val = current.get("f_dir_ud", "0")
+        fdir_lr_val = current.get("f_dir_lr", "0")
 
         sentinel = MODE_STEMP_SENTINEL.get(mode_str)
         if target_temp is not None:
@@ -328,19 +332,18 @@ class DaikinCloudClient:
             stemp_val = current.get("stemp", "22.0")
 
         dt_key, dh_key = MODE_TEMP_PARAMS.get(mode_num, ("dt3", "dh3"))
-        dfr_key = f"dfr{mode_num}"
 
         params = (
             f"port={device.port}"
-            f"&pow={pow_val}"
             f"&mode={mode_num}"
-            f"&stemp={stemp_val}"
-            f"&shum={shum_val}"
-            f"&f_rate={frate_val}"
-            f"&f_dir={fdir_val}"
-            f"&{dt_key}={stemp_val}"
             f"&{dh_key}=0"
-            f"&{dfr_key}={frate_val}"
+            f"&f_dir_ud={fdir_ud_val}"
+            f"&{dt_key}={stemp_val}"
+            f"&f_rate={frate_val}"
+            f"&shum={shum_val}"
+            f"&f_dir_lr={fdir_lr_val}"
+            f"&pow={pow_val}"
+            f"&stemp={stemp_val}"
         )
 
         _LOGGER.debug(
@@ -348,6 +351,6 @@ class DaikinCloudClient:
             pow_val, mode_str, mode_num, stemp_val, frate_val,
         )
         text = await self._get(f"/aircon/set_control_info?{params}")
-        kv   = _parse_kv(text)
+        kv = _parse_kv(text)
         if kv.get("ret") != "OK":
             raise DaikinAPIError(f"set_control_info failed: {text[:200]}")

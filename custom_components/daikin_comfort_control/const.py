@@ -1,6 +1,6 @@
 """Constants for Daikin Comfort Control integration.
 
-All values confirmed via mitmproxy traffic capture 2026-06-02.
+Values confirmed via mitmproxy traffic capture 2026-06-02 where noted.
 Base URL: https://scr.daikincloud.net
 """
 
@@ -13,28 +13,27 @@ CONF_SCAN_INTERVAL = "scan_interval"
 
 DEFAULT_SCAN_INTERVAL = 30
 
-# mode= values confirmed via traffic capture
-# mode=3 seen in capture; others inferred from Daikin BRP069C convention
+# mode= values confirmed/inferred from capture
 HA_TO_DAIKIN_MODE: dict[str, int] = {
-    "auto":     1,
-    "dry":      2,
-    "cool":     3,
-    "fan_only": 6,
-    "heat":     7,
+    "auto": 1,        # still inferred
+    "dry": 2,         # still inferred
+    "cool": 3,        # confirmed
+    "heat": 4,        # confirmed
+    "fan_only": 6,    # still inferred
 }
 DAIKIN_TO_HA_MODE: dict[int, str] = {v: k for k, v in HA_TO_DAIKIN_MODE.items()}
 
-# f_rate= values: 'A' confirmed in capture; numeric levels inferred from BRP069C convention
+# f_rate values confirmed/inferred from capture
 HA_TO_DAIKIN_FAN: dict[str, str] = {
-    "auto":        "A",
-    "quiet":       "B",
-    "night":       "B",
-    "low":         "3",
-    "medium_low":  "4",
-    "medium":      "5",
-    "medium_high": "6",
-    "high":        "7",
-    "powerful":    "7",
+    "auto": "A",          # confirmed
+    "quiet": "B",         # inferred
+    "night": "B",         # inferred alias
+    "low": "3",           # inferred
+    "medium_low": "4",    # confirmed in heat request
+    "medium": "5",        # inferred
+    "medium_high": "6",   # inferred
+    "high": "7",          # inferred
+    "powerful": "7",      # inferred alias
 }
 DAIKIN_TO_HA_FAN: dict[str, str] = {
     "A": "auto",
@@ -46,18 +45,16 @@ DAIKIN_TO_HA_FAN: dict[str, str] = {
     "7": "high",
 }
 
-# stemp sentinels for modes that don't use a numeric setpoint
 MODE_STEMP_SENTINEL: dict[str, str] = {
-    "dry":      "M",
+    "dry": "M",
     "fan_only": "--",
 }
 
-# Per-mode dt/dh param names (dtN = mode-specific temp, dhN = mode-specific humidity)
-# Confirmed: dt3/dh3 seen in capture for mode=3 (cool)
+# Mode-specific dt/dh parameters confirmed for cool=3 and heat=4.
 MODE_TEMP_PARAMS: dict[int, tuple[str, str]] = {
     1: ("dt1", "dh1"),
     2: ("dt2", "dh2"),
     3: ("dt3", "dh3"),
+    4: ("dt4", "dh4"),
     6: ("dt6", "dh6"),
-    7: ("dt7", "dh7"),
 }

@@ -27,10 +27,30 @@ Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API w
 | HA Mode | Daikin `mode=` | Status |
 |---|---|---|
 | Cool | 3 | ✅ Confirmed |
-| Heat | 7 | ⚠️ Inferred |
+| Heat | 4 | ✅ Confirmed |
 | Auto | 1 | ⚠️ Inferred |
 | Dry | 2 | ⚠️ Inferred |
 | Fan Only | 6 | ⚠️ Inferred |
+
+---
+
+## Confirmed Captures
+
+| Item | Value |
+|---|---|
+| Base URL | `https://scr.daikincloud.net` |
+| Auth endpoint | `POST /common/login` (form-encoded) |
+| Login response | `access_token`, `refresh_token`, `expires_in="600"` |
+| Auth header | `authentication: bearer <token>` *(non-standard name)* |
+| Device list response | `ret=OK,ip=...,device=30050:47:0:aircon:3_1_0:...:DaikinAP07464:...:us:...` |
+| Control read | `GET /aircon/get_control_info?port=30050&id=<user>` |
+| Control write | `GET /aircon/set_control_info?port=30050&...` |
+| Success response | `ret=OK,adv=` |
+| Confirmed heat mode | `mode=4` |
+| Confirmed fan speed | `f_rate=A` = auto, `f_rate=4` = medium_low |
+| Confirmed swing params | `f_dir_ud`, `f_dir_lr` |
+| Response format | Comma-separated `key=value` (not JSON) |
+| Token TTL | 600 seconds |
 
 ---
 
@@ -61,7 +81,7 @@ Restart HA.
 3. Enter:
    - **Email** — your Daikin Comfort Control app login
    - **Password** — your Daikin Comfort Control app password
-   - **Device UID** — the `x-daikin-uid` value from a mitmproxy capture (see below)
+   - **Device UID** — the `x-daikin-uid` value from a mitmproxy capture
    - **Poll interval** — seconds between state updates (default: 30)
 
 ### Finding Your Device UID
@@ -80,17 +100,13 @@ See [docs/traffic-capture.md](docs/traffic-capture.md) for the full mitmproxy se
 
 See [docs/api_docs.md](docs/api_docs.md) for the full documented API.
 
-**Key confirmed facts from traffic capture:**
+This integration now uses the confirmed cloud behavior, including:
 
-| Item | Value |
-|---|---|
-| Base URL | `https://scr.daikincloud.net` |
-| Auth endpoint | `POST /common/login` (form-encoded) |
-| Auth header | `authentication: bearer <token>` *(non-standard name)* |
-| Control read | `GET /aircon/get_control_info?port=30050&id=<user>` |
-| Control write | `GET /aircon/set_control_info?port=30050&...` |
-| Response format | Comma-separated `key=value` (not JSON) |
-| Token TTL | 600 seconds |
+- `mode=4` for heat
+- `dt4` / `dh4` for heat-specific setpoint params
+- `ret=OK,adv=` as the success response for `set_control_info`
+- `device_list` parsing from the confirmed colon-delimited `device=` payload
+- `f_dir_ud` and `f_dir_lr` as the swing fields used in write requests
 
 ---
 
@@ -121,13 +137,13 @@ docs/
 1. Capture traffic with mitmproxy (see [docs/traffic-capture.md](docs/traffic-capture.md))
 2. Document new endpoints/params in [docs/api_docs.md](docs/api_docs.md)
 3. Update `daikin_api.py` with confirmed values
-4. Test via HA Developer Tools → Template or Services before UI testing
+4. Test via HA Developer Tools before UI testing
 
 ---
 
 ## Troubleshooting
 
-**"No devices found"** — Check that the device UID matches the `x-daikin-uid` from your capture. Try recapturing the login flow.
+**"No devices found"** — Check that the device UID matches the `x-daikin-uid` from your capture. The integration now also validates `ret=OK` from `device_list` and parses the confirmed `device=` payload layout.
 
 **"Cannot connect"** — Verify your HA instance has outbound HTTPS access to `scr.daikincloud.net`.
 
@@ -145,4 +161,4 @@ logger:
 
 ## Contributing
 
-The most valuable contribution right now is **traffic captures** of currently-unconfirmed API behaviors (mode changes, fan speed values, login response body). See [docs/api_docs.md](docs/api_docs.md) for the current unknowns list.
+The most valuable contribution right now is **traffic captures** of the remaining unconfirmed API behaviors: auto, dry, fan-only mode values; additional manual fan speeds; token refresh response; and any schedule/timer endpoints.

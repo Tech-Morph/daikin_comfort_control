@@ -99,8 +99,19 @@ The `x-daikin-uid` is a static hex string tied to the adapter, captured from mit
 GET /common/device_list
 ```
 
-Returns a comma-separated key=value string. The `device` field contains colon-separated subfields.
-Field index 0 = port, field index 8 = device name.
+**Confirmed response:**
+```
+ret=OK,ip=71.63.249.75,device=30050:47:0:aircon:3_1_0:1:0:0:DaikinAP07464:3:polling:us:16:0:1:4:3.40:3:0::DaikinAP07464:::::
+```
+
+The `device` value is a colon-delimited record. Confirmed useful fields so far:
+
+| Index | Value | Meaning |
+|---|---|---|
+| `0` | `30050` | Device routing port |
+| `4` | `3_1_0` | Firmware version |
+| `8` | `DaikinAP07464` | Device name |
+| `11` | `us` | Region |
 
 ### Basic Info
 
@@ -124,7 +135,7 @@ GET /aircon/get_control_info?port=<port>&id=<username>&apw=&spw=
 
 **Example response:**
 ```
-ret=OK,pow=1,mode=3,stemp=20.5,shum=0,f_rate=A,f_dir=0,f_dir_ud=0,f_dir_lr=0,dt1=22.0,dh1=0,dt2=M,dh2=0,dt3=20.5,dh3=0,dt6=--,dh6=0,dt7=22.0,dh7=0,dfr1=A,dfr2=A,dfr3=A,dfr6=A,dfr7=A
+ret=OK,pow=1,mode=3,stemp=20.5,shum=0,f_rate=A,f_dir=0,f_dir_ud=0,f_dir_lr=0,dt1=22.0,dh1=0,dt2=M,dh2=0,dt3=20.5,dh3=0,dt4=25.0,dh4=0,dt6=--,dh6=0
 ```
 
 ### Get Sensor Info
@@ -141,12 +152,22 @@ ret=OK,htemp=21.0,hhum=--,otemp=18.5,err=0
 ### Set Control Info
 
 ```
-GET /aircon/set_control_info?port=<port>&pow=<pow>&mode=<mode>&stemp=<stemp>&shum=<shum>&f_rate=<f_rate>&f_dir=<f_dir>&dt<N>=<stemp>&dh<N>=0&dfr<N>=<f_rate>
+GET /aircon/set_control_info?port=<port>&pow=<pow>&mode=<mode>&stemp=<stemp>&shum=<shum>&f_rate=<f_rate>&f_dir_ud=<v>&f_dir_lr=<v>&dt<N>=<stemp>&dh<N>=0
 ```
 
-**Confirmed from capture:**
+**Confirmed cool request:**
 ```
 GET /aircon/set_control_info?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A&shum=0&f_dir_lr=0&pow=1&stemp=20.5&dh3=0
+```
+
+**Confirmed heat request:**
+```
+GET /aircon/set_control_info?port=30050&mode=4&dh4=0&f_dir_ud=0&dt4=25.0&f_rate=4&shum=0&f_dir_lr=0&pow=1&stemp=25.0
+```
+
+**Confirmed success response:**
+```
+ret=OK,adv=
 ```
 
 ---
@@ -164,41 +185,47 @@ GET /aircon/set_control_info?port=30050&mode=3&dt3=20.5&f_dir_ud=0&f_rate=A&shum
 |---|---|---|
 | `1` | `auto` | Inferred |
 | `2` | `dry` | Inferred |
-| `3` | `cool` | **Confirmed in capture** |
+| `3` | `cool` | **Confirmed** |
+| `4` | `heat` | **Confirmed** |
 | `6` | `fan_only` | Inferred |
-| `7` | `heat` | Inferred |
-
-> Modes 1, 2, 6, 7 follow standard BRP069C convention and have not yet been independently confirmed via capture. Test each mode and update this table.
 
 ### `stemp` — Target Temperature
 | Value | Meaning |
 |---|---|
-| `20.5`, `20.0`, etc. | Temperature in °C (0.5° increments) |
+| `20.5`, `20.0`, `25.0`, etc. | Temperature in °C (0.5° increments) |
 | `M` | Sentinel for dry mode |
 | `--` | Sentinel for fan-only mode |
 
 ### `f_rate` — Fan Speed
 | Value | HA Fan Mode | Notes |
 |---|---|---|
-| `A` | `auto` | **Confirmed in capture** |
+| `A` | `auto` | **Confirmed** |
+| `4` | `medium_low` | **Confirmed** |
 | `B` | `quiet` | Inferred |
 | `3` | `low` | Inferred |
-| `4` | `medium_low` | Inferred |
 | `5` | `medium` | Inferred |
 | `6` | `medium_high` | Inferred |
 | `7` | `high` | Inferred |
 
+### Swing Parameters
+
+| Parameter | Meaning | Status |
+|---|---|---|
+| `f_dir_ud` | Up/down swing | **Confirmed field name** |
+| `f_dir_lr` | Left/right swing | **Confirmed field name** |
+| `f_dir` | Combined/legacy direction field in `get_control_info` | Seen in responses |
+
 ### Mode-Specific Parameters
 
-Each mode uses a dedicated temperature/humidity/fan-rate parameter set:
+Each mode uses a dedicated temperature/humidity parameter set:
 
-| Mode | dt param | dh param | dfr param |
-|---|---|---|---|
-| 1 (auto) | `dt1` | `dh1` | `dfr1` |
-| 2 (dry) | `dt2` | `dh2` | `dfr2` |
-| 3 (cool) | `dt3` | `dh3` | `dfr3` |
-| 6 (fan) | `dt6` | `dh6` | `dfr6` |
-| 7 (heat) | `dt7` | `dh7` | `dfr7` |
+| Mode | dt param | dh param |
+|---|---|---|
+| 1 (auto) | `dt1` | `dh1` |
+| 2 (dry) | `dt2` | `dh2` |
+| 3 (cool) | `dt3` | `dh3` |
+| 4 (heat) | `dt4` | `dh4` |
+| 6 (fan) | `dt6` | `dh6` |
 
 ---
 
@@ -211,10 +238,12 @@ All device endpoints require a `port=` query parameter. The port value `30050` w
 ## What Still Needs Capture
 
 - [x] Login response body — ✅ confirmed 2026-06-02
-- [ ] `device_list` response body (confirm field structure, number of devices)
-- [ ] `set_control_info` response body (confirm `ret=OK` format)
-- [ ] Mode changes: heat, auto, dry, fan_only (confirm mode values 1, 2, 6, 7)
-- [ ] Manual fan speed selection (confirm `f_rate` numeric values 3–7)
-- [ ] `f_dir` / `f_dir_ud` / `f_dir_lr` swing parameter behavior
+- [x] `device_list` response body — ✅ confirmed 2026-06-02
+- [x] `set_control_info` response body — ✅ confirmed 2026-06-02 (`ret=OK,adv=`)
+- [x] Heat mode — ✅ confirmed as `mode=4`
+- [ ] Auto mode (confirm mode value)
+- [ ] Dry mode (confirm mode value)
+- [ ] Fan-only mode (confirm mode value)
+- [ ] Manual fan speeds `3`, `5`, `6`, `7`
 - [ ] Token refresh endpoint and response format
 - [ ] Any schedule/timer endpoints
