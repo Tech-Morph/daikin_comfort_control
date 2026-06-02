@@ -2,33 +2,22 @@
   "config": {
     "step": {
       "user": {
-        "title": "Daikin Comfort Control",
-        "description": "Enter your Daikin Comfort Control (Skyport) account credentials and the device UID from your mitmproxy capture (x-daikin-uid header).",
+        "title": "Connect to Daikin Comfort Control",
+        "description": "Enter your Daikin Comfort Control app credentials and the device UID from a traffic capture.",
         "data": {
-          "username":      "Email address",
-          "password":      "Password",
-          "uid":           "Device UID (x-daikin-uid)",
+          "username": "Email address",
+          "password": "Password",
+          "uid": "Device UID (x-daikin-uid)",
           "scan_interval": "Poll interval (seconds)"
         }
       }
     },
     "error": {
-      "invalid_auth":  "Invalid email or password",
-      "cannot_connect": "Cannot connect to Daikin cloud",
-      "no_devices":    "Authenticated OK but no devices found"
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Cannot connect to Daikin cloud"
     },
     "abort": {
-      "already_configured": "This account is already configured"
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Daikin Comfort Control Options",
-        "data": {
-          "scan_interval": "Poll interval (seconds)"
-        }
-      }
+      "already_configured": "This device is already configured"
     }
   }
 }

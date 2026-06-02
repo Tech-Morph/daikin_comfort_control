@@ -1,35 +1,69 @@
-"""Daikin Comfort Control integration entry point."""
+"""Daikin Comfort Control integration."""
 from __future__ import annotations
+
+import logging
+
+import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_UID, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
 from .coordinator import DaikinCoordinator
+from .daikin_api import DaikinCloudClient, DaikinAuthError
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["climate"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    coordinator = DaikinCoordinator(hass, entry)
+    """Set up Daikin Comfort Control from a config entry."""
+    session = aiohttp.ClientSession()
+
+    client = DaikinCloudClient(
+        username=entry.data[CONF_USERNAME],
+        password=entry.data[CONF_PASSWORD],
+        uid=entry.data[CONF_UID],
+        session=session,
+    )
+
     try:
-        await coordinator.client.login()
+        await client.login()
+        devices = await client.get_devices()
+    except DaikinAuthError as err:
+        await session.close()
+        raise ConfigEntryNotReady(f"Daikin auth failed: {err}") from err
     except Exception as err:
-        await coordinator.async_shutdown()
-        raise ConfigEntryNotReady(f"Cannot connect to Daikin cloud: {err}") from err
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+        await session.close()
+        raise ConfigEntryNotReady(f"Daikin setup failed: {err}") from err
+
+    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = {
+        "client": client,
+        "session": session,
+        "devices": devices,
+        "coordinators": {},
+    }
+
+    # Create one coordinator per device
+    for device in devices:
+        coordinator = DaikinCoordinator(hass, client, device, scan_interval)
+        await coordinator.async_config_entry_first_refresh()
+        hass.data[DOMAIN][entry.entry_id]["coordinators"][device.port] = coordinator
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
     if unload_ok:
-        coordinator: DaikinCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        await coordinator.async_shutdown()
+        data = hass.data[DOMAIN].pop(entry.entry_id)
+        await data["session"].close()
+
     return unload_ok

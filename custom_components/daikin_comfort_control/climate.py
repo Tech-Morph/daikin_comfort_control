@@ -1,5 +1,6 @@
 """Climate platform for Daikin Comfort Control."""
 from __future__ import annotations
+
 import logging
 from typing import Any
 
@@ -10,28 +11,42 @@ from homeassistant.components.climate import (
 )
 from homeassistant.components.climate.const import FAN_AUTO, FAN_HIGH, FAN_LOW, FAN_MEDIUM, FAN_OFF
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, DAIKIN_TO_HA_FAN, HA_TO_DAIKIN_FAN
 from .coordinator import DaikinCoordinator
-from .daikin_api import DaikinDevice
+from .daikin_api import DaikinAPIError
 
 _LOGGER = logging.getLogger(__name__)
 
-_HA_TO_HVAC: dict[str, HVACMode] = {
+# Daikin fan speed labels - extend HA built-ins with custom strings
+FAN_QUIET       = "quiet"
+FAN_MEDIUM_LOW  = "medium_low"
+FAN_MEDIUM_HIGH = "medium_high"
+
+FAN_MODES = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
+
+HVAC_MODES = [
+    HVACMode.OFF,
+    HVACMode.AUTO,
+    HVACMode.COOL,
+    HVACMode.HEAT,
+    HVACMode.DRY,
+    HVACMode.FAN_ONLY,
+]
+
+DAIKIN_TO_HVAC: dict[str, HVACMode] = {
+    "auto":     HVACMode.AUTO,
     "cool":     HVACMode.COOL,
     "heat":     HVACMode.HEAT,
-    "auto":     HVACMode.AUTO,
     "dry":      HVACMode.DRY,
     "fan_only": HVACMode.FAN_ONLY,
 }
-_HVAC_TO_HA: dict[HVACMode, str] = {v: k for k, v in _HA_TO_HVAC.items()}
-
-_FAN_MODES = [FAN_AUTO, "quiet", FAN_LOW, "medium_low", FAN_MEDIUM, "medium_high", FAN_HIGH]
+HVAC_TO_DAIKIN: dict[HVACMode, str] = {v: k for k, v in DAIKIN_TO_HVAC.items()}
 
 
 async def async_setup_entry(
@@ -39,115 +54,118 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: DaikinCoordinator = hass.data[DOMAIN][entry.entry_id]
-    await coordinator.async_config_entry_first_refresh()
-    entities = [
-        DaikinClimateEntity(coordinator, device)
-        for device in coordinator.devices
-    ]
+    """Set up Daikin climate entities from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
+    entities = []
+    for port, coordinator in data["coordinators"].items():
+        entities.append(DaikinClimateEntity(coordinator))
     async_add_entities(entities)
 
 
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
-    _attr_has_entity_name           = True
-    _attr_temperature_unit          = UnitOfTemperature.CELSIUS
-    _attr_target_temperature_step   = 0.5
-    _attr_min_temp                  = 10.0
-    _attr_max_temp                  = 32.0
-    _attr_hvac_modes                = [
-        HVACMode.OFF,
-        HVACMode.COOL,
-        HVACMode.HEAT,
-        HVACMode.AUTO,
-        HVACMode.DRY,
-        HVACMode.FAN_ONLY,
-    ]
-    _attr_fan_modes                 = _FAN_MODES
-    _attr_supported_features        = (
+    """Represents a single Daikin mini-split unit."""
+
+    _attr_temperature_unit      = UnitOfTemperature.CELSIUS
+    _attr_target_temperature_step = 0.5
+    _attr_min_temp              = 16.0
+    _attr_max_temp              = 30.0
+    _attr_hvac_modes            = HVAC_MODES
+    _attr_fan_modes             = FAN_MODES
+    _attr_supported_features    = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
+    _attr_has_entity_name = True
+    _attr_name = None
 
-    def __init__(self, coordinator: DaikinCoordinator, device: DaikinDevice) -> None:
+    def __init__(self, coordinator: DaikinCoordinator) -> None:
         super().__init__(coordinator)
-        self._device = device
-        self._attr_unique_id = f"{DOMAIN}_{device.mac}"
-        self._attr_name      = device.name
+        device = coordinator.device
+        self._attr_unique_id = f"{DOMAIN}_{device.uid}_{device.port}"
         self._attr_device_info = DeviceInfo(
-            identifiers  = {(DOMAIN, device.mac)},
-            name         = device.name,
-            manufacturer = "Daikin",
-            model        = "BRP069C4x",
-            sw_version   = device.fw_ver,
+            identifiers={(DOMAIN, device.uid)},
+            name=device.name,
+            manufacturer="Daikin",
+            model="BRP069C4x",
+            sw_version=device.fw_ver.replace("_", "."),
         )
 
     @property
     def _state(self):
-        return self.coordinator.data.get(self._device.mac)
+        return self.coordinator.data
 
     @property
     def hvac_mode(self) -> HVACMode:
-        s = self._state
-        if s is None or not s.power:
+        if not self._state.power:
             return HVACMode.OFF
-        return _HA_TO_HVAC.get(s.mode, HVACMode.COOL)
-
-    @property
-    def target_temperature(self) -> float | None:
-        return self._state.target_temp if self._state else None
+        return DAIKIN_TO_HVAC.get(self._state.mode, HVACMode.COOL)
 
     @property
     def current_temperature(self) -> float | None:
-        return self._state.indoor_temp if self._state else None
+        return self._state.indoor_temp if self._state.indoor_temp != 0.0 else None
+
+    @property
+    def target_temperature(self) -> float | None:
+        return self._state.target_temp
 
     @property
     def current_humidity(self) -> int | None:
-        s = self._state
-        return s.indoor_humidity if s and s.indoor_humidity else None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        s = self._state
-        if not s:
-            return {}
-        return {
-            "outdoor_temp":    s.outdoor_temp,
-            "fan_dir":         s.fan_dir,
-            "indoor_humidity": s.indoor_humidity,
-        }
+        h = self._state.indoor_humidity
+        return h if h > 0 else None
 
     @property
     def fan_mode(self) -> str:
-        s = self._state
-        return s.fan_rate if s else FAN_AUTO
+        return DAIKIN_TO_HA_FAN.get(self._state.fan_rate, FAN_AUTO)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {}
+        if self._state.outdoor_temp != 0.0:
+            attrs["outdoor_temperature"] = self._state.outdoor_temp
+        return attrs
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        if hvac_mode == HVACMode.OFF:
-            await self.coordinator.client.set_control(self._device, power=False)
-        else:
-            ha_mode = _HVAC_TO_HA.get(hvac_mode, "cool")
-            await self.coordinator.client.set_control(
-                self._device, power=True, mode=ha_mode
-            )
+        client = self.coordinator.client
+        device = self.coordinator.device
+        try:
+            if hvac_mode == HVACMode.OFF:
+                await client.set_control(device, power=False)
+            else:
+                daikin_mode = HVAC_TO_DAIKIN.get(hvac_mode, "cool")
+                await client.set_control(device, power=True, mode=daikin_mode)
+        except DaikinAPIError as err:
+            _LOGGER.error("Failed to set HVAC mode %s: %s", hvac_mode, err)
         await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
-        await self.coordinator.client.set_control(self._device, target_temp=float(temp))
+        client = self.coordinator.client
+        device = self.coordinator.device
+        try:
+            await client.set_control(device, target_temp=float(temp))
+        except DaikinAPIError as err:
+            _LOGGER.error("Failed to set temperature %s: %s", temp, err)
         await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
-        await self.coordinator.client.set_control(self._device, fan_rate=fan_mode)
+        client = self.coordinator.client
+        device = self.coordinator.device
+        try:
+            await client.set_control(device, fan_rate=fan_mode)
+        except DaikinAPIError as err:
+            _LOGGER.error("Failed to set fan mode %s: %s", fan_mode, err)
         await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
-        await self.coordinator.client.set_control(self._device, power=True)
-        await self.coordinator.async_request_refresh()
+        await self.async_set_hvac_mode(
+            DAIKIN_TO_HVAC.get(self._state.mode, HVACMode.COOL)
+            if self._state.mode
+            else HVACMode.COOL
+        )
 
     async def async_turn_off(self) -> None:
-        await self.coordinator.client.set_control(self._device, power=False)
-        await self.coordinator.async_request_refresh()
+        await self.async_set_hvac_mode(HVACMode.OFF)
