@@ -1,6 +1,13 @@
 """Constants for Daikin Comfort Control."""
 DOMAIN = "daikin_comfort_control"
 
+# Config entry keys
+CONF_USERNAME       = "username"
+CONF_PASSWORD       = "password"
+CONF_UID            = "uid"
+CONF_SCAN_INTERVAL  = "scan_interval"
+DEFAULT_SCAN_INTERVAL = 30
+
 # Daikin mode integer (as string) -> internal HA-friendly name
 DAIKIN_MODE_MAP: dict[str, str] = {
     "1": "auto",
