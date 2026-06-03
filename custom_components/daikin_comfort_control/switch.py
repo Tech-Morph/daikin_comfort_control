@@ -1,4 +1,4 @@
-"""Switch platform for Daikin Comfort Control — Vacation Mode."""
+"""Switch platform for Daikin Comfort Control - Vacation Mode."""
 from __future__ import annotations
 
 import logging
@@ -34,34 +34,36 @@ class DaikinVacationSwitch(CoordinatorEntity[DaikinCoordinator], SwitchEntity):
 
     When ON  -> GET /common/set_holiday?port=<port>&en_hol=1
     When OFF -> GET /common/set_holiday?port=<port>&en_hol=0
+
+    Device identifier uses device.uid to match climate.py and sensor.py
+    so all entities appear under the same device card.
     """
 
     _attr_has_entity_name = True
     _attr_name = "Vacation Mode"
     _attr_icon = "mdi:palm-tree"
-    _attr_translation_key = "vacation_mode"
 
     def __init__(self, coordinator: DaikinCoordinator) -> None:
         super().__init__(coordinator)
         device = coordinator.device
-        self._attr_unique_id = f"{device.mac}_vacation"
+        # unique_id uses uid+port to match the pattern of other entities
+        self._attr_unique_id = f"{DOMAIN}_{device.uid}_{device.port}_vacation"
+        # identifiers MUST match climate.py and sensor.py exactly
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.mac)},
+            identifiers={(DOMAIN, device.uid)},
             name=device.name,
             manufacturer="Daikin",
             model="BRP069C4x",
-            sw_version=device.fw_ver,
+            sw_version=device.fw_ver.replace("_", "."),
         )
 
     @property
     def is_on(self) -> bool | None:
-        """Return True when vacation mode is active."""
         if self.coordinator.data is None:
             return None
         return self.coordinator.data.state.vacation
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Activate vacation mode."""
         try:
             await self.coordinator.client.set_vacation(
                 self.coordinator.device, enable=True
@@ -72,7 +74,6 @@ class DaikinVacationSwitch(CoordinatorEntity[DaikinCoordinator], SwitchEntity):
         self.coordinator.set_optimistic_vacation(enable=True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Deactivate vacation mode."""
         try:
             await self.coordinator.client.set_vacation(
                 self.coordinator.device, enable=False
@@ -84,5 +85,4 @@ class DaikinVacationSwitch(CoordinatorEntity[DaikinCoordinator], SwitchEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
         self.async_write_ha_state()

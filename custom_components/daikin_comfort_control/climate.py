@@ -67,18 +67,16 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = hass.data[DOMAIN][entry.entry_id]
-    entities = [
-        DaikinClimateEntity(coordinator)
-        for coordinator in data["coordinators"].values()
-    ]
-    async_add_entities(entities)
+    coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities(
+        DaikinClimateEntity(coordinator) for coordinator in coordinators
+    )
 
 
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     """Represents a single Daikin mini-split unit.
 
-    Temperature: FAHRENHEIT native, 64–90°F, 1° step.
+    Temperature: FAHRENHEIT native, 64-90 F, 1 degree step.
     Swing modes: off / vertical (tilt) / horizontal / both (3D).
     """
 
@@ -182,7 +180,7 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
             await client.set_control(device, target_temp=temp_c)
             self.coordinator.set_optimistic_data(target_temp=temp_c)
         except DaikinAPIError as err:
-            _LOGGER.error("Failed to set temperature %s°F (%s°C): %s", temp_f, temp_c, err)
+            _LOGGER.error("Failed to set temperature %sF (%sC): %s", temp_f, temp_c, err)
             await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:

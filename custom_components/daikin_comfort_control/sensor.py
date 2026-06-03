@@ -3,8 +3,8 @@
 Provides the following sensors per device, all grouped under the same
 device card in HA so they appear automatically on integration setup:
 
-  - Outdoor Temperature       (°C native, HA converts to user unit)
-  - Indoor Temperature        (°C native, HA converts to user unit)
+  - Outdoor Temperature       (deg C native, HA converts to user unit)
+  - Indoor Temperature        (deg C native, HA converts to user unit)
   - Indoor Humidity           (%)
   - Fan Speed                 (string: auto / quiet / low / ...)
   - Fan Direction             (string: stopped / swing / position_N)
@@ -33,7 +33,6 @@ from .coordinator import DaikinCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 # f_dir_ud raw value -> friendly label
-# 0 = off/stopped, S = swing, 1-5 = fixed positions
 FAN_DIR_UD_MAP: dict[str, str] = {
     "0": "stopped",
     "1": "position_1",
@@ -51,9 +50,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Create all sensors for every discovered device."""
-    data = hass.data[DOMAIN][entry.entry_id]
+    coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]
     entities: list[SensorEntity] = []
-    for coordinator in data["coordinators"].values():
+    for coordinator in coordinators:
         entities += [
             DaikinOutdoorTempSensor(coordinator),
             DaikinIndoorTempSensor(coordinator),
@@ -89,12 +88,10 @@ class _DaikinBaseSensor(CoordinatorEntity[DaikinCoordinator], SensorEntity):
 
     @property
     def _state(self):
-        """Shortcut to DaikinState."""
         return self.coordinator.data.state
 
     @property
     def _raw(self) -> dict[str, str]:
-        """Shortcut to raw control_info dict."""
         return self.coordinator.data.raw_control
 
 
@@ -103,13 +100,6 @@ class _DaikinBaseSensor(CoordinatorEntity[DaikinCoordinator], SensorEntity):
 # ---------------------------------------------------------------------------
 
 class DaikinOutdoorTempSensor(_DaikinBaseSensor):
-    """Outdoor temperature from get_sensor_info (otemp).
-
-    Native unit is °C; HA will auto-convert to the user's preferred unit.
-    This is intentionally separate from the climate entity which uses
-    FAHRENHEIT as its native unit — sensor.py lets HA handle conversion.
-    """
-
     _attr_name                       = "Outdoor Temperature"
     _attr_device_class               = SensorDeviceClass.TEMPERATURE
     _attr_state_class                = SensorStateClass.MEASUREMENT
@@ -126,13 +116,6 @@ class DaikinOutdoorTempSensor(_DaikinBaseSensor):
 
 
 class DaikinIndoorTempSensor(_DaikinBaseSensor):
-    """Indoor temperature from get_sensor_info (htemp).
-
-    Native unit is °C; HA will auto-convert to the user's preferred unit.
-    Mirrors current_temperature on the climate entity but as a standalone
-    sensor for automations, history graphs, and Energy dashboard.
-    """
-
     _attr_name                       = "Indoor Temperature"
     _attr_device_class               = SensorDeviceClass.TEMPERATURE
     _attr_state_class                = SensorStateClass.MEASUREMENT
@@ -153,11 +136,6 @@ class DaikinIndoorTempSensor(_DaikinBaseSensor):
 # ---------------------------------------------------------------------------
 
 class DaikinIndoorHumiditySensor(_DaikinBaseSensor):
-    """Indoor humidity from get_sensor_info (hhum).
-
-    Returns None when the adapter reports '--' (no humidity sensor fitted).
-    """
-
     _attr_name                       = "Indoor Humidity"
     _attr_device_class               = SensorDeviceClass.HUMIDITY
     _attr_state_class                = SensorStateClass.MEASUREMENT
@@ -178,13 +156,6 @@ class DaikinIndoorHumiditySensor(_DaikinBaseSensor):
 # ---------------------------------------------------------------------------
 
 class DaikinFanSpeedSensor(_DaikinBaseSensor):
-    """Current fan speed as a human-readable string.
-
-    Uses the same DAIKIN_TO_HA_FAN mapping as the climate entity so the
-    value always matches what is shown in the climate card fan mode.
-    Values: auto, quiet, low, medium_low, medium, medium_high, high
-    """
-
     _attr_name = "Fan Speed"
     _attr_icon = "mdi:fan"
 
@@ -200,12 +171,6 @@ class DaikinFanSpeedSensor(_DaikinBaseSensor):
 
 
 class DaikinFanDirectionSensor(_DaikinBaseSensor):
-    """Up/down vane direction from f_dir_ud in get_control_info.
-
-    Valid values are not fully confirmed yet; unknown raw values are
-    returned as 'position_<raw>' so state is never truly unknown.
-    """
-
     _attr_name = "Fan Direction"
     _attr_icon = "mdi:arrow-up-down"
 
@@ -221,16 +186,10 @@ class DaikinFanDirectionSensor(_DaikinBaseSensor):
 
 
 # ---------------------------------------------------------------------------
-# Compressor sensors (from get_sensor_info)
+# Compressor sensors
 # ---------------------------------------------------------------------------
 
 class DaikinCompressorFreqSensor(_DaikinBaseSensor):
-    """Compressor operating frequency in Hz (cmpfreq from get_sensor_info).
-
-    Reported as 0 when the compressor is off.  Useful for monitoring
-    load, efficiency, and diagnosing short-cycling.
-    """
-
     _attr_name                       = "Compressor Frequency"
     _attr_device_class               = SensorDeviceClass.FREQUENCY
     _attr_state_class                = SensorStateClass.MEASUREMENT
@@ -243,18 +202,10 @@ class DaikinCompressorFreqSensor(_DaikinBaseSensor):
     @property
     def native_value(self) -> int | None:
         v = self._state.cmpfreq
-        # Return None when compressor is off (0) so history graph is cleaner
         return v if v > 0 else None
 
 
 class DaikinCompressorPowerSensor(_DaikinBaseSensor):
-    """Compressor power draw (mompow from get_sensor_info).
-
-    The unit returned by the Daikin adapter is not definitively confirmed
-    as watts but is treated as such; it tracks compressor load proportionally.
-    Returns None when the compressor is off.
-    """
-
     _attr_name                       = "Compressor Power"
     _attr_device_class               = SensorDeviceClass.POWER
     _attr_state_class                = SensorStateClass.MEASUREMENT
