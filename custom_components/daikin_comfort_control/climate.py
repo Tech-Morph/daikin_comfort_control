@@ -54,11 +54,7 @@ def _c_to_f(celsius: float) -> float:
 
 
 def _f_to_c(fahrenheit: float) -> float:
-    """Convert Fahrenheit to Celsius, rounded to nearest 0.5°C step.
-
-    The Daikin API accepts stemp in 0.5°C increments.  We round to the
-    nearest step so that e.g. 68°F → 20.0°C (not 20.0°C raw 20.0).
-    """
+    """Convert Fahrenheit to Celsius, rounded to nearest 0.5°C step."""
     raw = (fahrenheit - 32) * 5 / 9
     return round(raw * 2) / 2
 
@@ -79,21 +75,16 @@ async def async_setup_entry(
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     """Represents a single Daikin mini-split unit.
 
-    Temperature unit: FAHRENHEIT (North American Skyport cloud / BRP069C4x)
-    -----------------------------------------------------------------------
-    The device is sold and operated in °F: range 64–90°F in 1° increments.
-    We own the unit natively so HA performs zero auto-conversion.
-
-    Internally the Daikin cloud API still accepts stemp in °C (e.g. 20.0).
-    All °F ↔ °C conversion is done in this class:
-      - Outbound to HA  : _c_to_f()  (current_temp, target_temp)
-      - Inbound from HA : _f_to_c()  (async_set_temperature)
+    Temperature unit: FAHRENHEIT (native — no HA auto-conversion)
+    Range: 64–90°F in 1° increments.
+    The Daikin cloud API accepts stemp in °C; all °F↔°C conversion
+    is handled in this class.
     """
 
     _attr_temperature_unit        = UnitOfTemperature.FAHRENHEIT
-    _attr_target_temperature_step = 1.0    # 1°F increments
-    _attr_min_temp                = 64.0   # confirmed NA Daikin minimum
-    _attr_max_temp                = 90.0   # confirmed NA Daikin maximum
+    _attr_target_temperature_step = 1.0
+    _attr_min_temp                = 64.0
+    _attr_max_temp                = 90.0
     _attr_hvac_modes              = HVAC_MODES
     _attr_fan_modes               = FAN_MODES
     _attr_supported_features      = (
@@ -129,14 +120,12 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        """Indoor temperature in °F (our native unit)."""
         t = self._state.indoor_temp
         return _c_to_f(t) if t != 0.0 else None
 
     @property
     def target_temperature(self) -> float | None:
-        """Target temperature in °F (our native unit)."""
-        t = self._state.target_temp   # stored as °C in DaikinState
+        t = self._state.target_temp
         return _c_to_f(t) if t is not None else None
 
     @property
@@ -146,6 +135,8 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def fan_mode(self) -> str:
+        # DaikinState.fan_rate is always a raw Daikin code ("A", "3", "B" etc.)
+        # DAIKIN_TO_HA_FAN maps raw code → HA label.
         return DAIKIN_TO_HA_FAN.get(self._state.fan_rate, FAN_AUTO)
 
     @property
@@ -157,7 +148,7 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         return attrs
 
     # ------------------------------------------------------------------
-    # Service handlers — optimistic update first, no immediate refresh
+    # Service handlers
     # ------------------------------------------------------------------
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -176,7 +167,6 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
             await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """HA passes °F (our native unit); convert to nearest 0.5°C for the API."""
         temp_f = kwargs.get(ATTR_TEMPERATURE)
         if temp_f is None:
             return
@@ -185,21 +175,23 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         device = self.coordinator.device
         try:
             await client.set_control(device, target_temp=temp_c)
-            # set_optimistic_data stores target_temp in °C — matches DaikinState
             self.coordinator.set_optimistic_data(target_temp=temp_c)
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set temperature %s°F (%s°C): %s", temp_f, temp_c, err)
             await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """fan_mode is the HA label (e.g. "low", "auto").
+
+        Pass it as-is to set_control (which calls HA_TO_DAIKIN_FAN internally)
+        and to set_optimistic_data (which also converts via HA_TO_DAIKIN_FAN).
+        No raw_overrides needed — coordinator handles raw_control internally.
+        """
         client = self.coordinator.client
         device = self.coordinator.device
         try:
             await client.set_control(device, fan_rate=fan_mode)
-            self.coordinator.set_optimistic_data(
-                fan_rate=fan_mode,
-                raw_overrides={"f_rate": HA_TO_DAIKIN_FAN.get(fan_mode, "A")},
-            )
+            self.coordinator.set_optimistic_data(fan_rate=fan_mode)
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set fan mode %s: %s", fan_mode, err)
             await self.coordinator.async_request_refresh()
