@@ -1,14 +1,13 @@
 """
 Daikin Comfort Control cloud API client.
 
-Fully confirmed via mitmproxy traffic capture (2026-06-02):
+Fully confirmed via mitmproxy traffic capture (2026-06-02/03):
   Base URL    : https://scr.daikincloud.net
   Login       : POST /common/login  (application/x-www-form-urlencoded)
                 Body: grant_type=password&scope=smart_app&username=<u>&password=<p>
                 Response: JSON {access_token, refresh_token, expires_in: "600"}
   Refresh     : POST /common/token_refresh  (application/x-www-form-urlencoded)
                 Body: grant_type=refresh_token&refresh_token=<token>
-                No authentication header needed - only x-daikin-uid
                 Response: identical schema to login, both tokens rotate
   Auth hdrs   : authentication: bearer <token>   <- non-standard header name
                 x-daikin-uid: <static uid>
@@ -17,24 +16,21 @@ Fully confirmed via mitmproxy traffic capture (2026-06-02):
   Poll        : GET /aircon/get_control_info?port=<port>&id=<username>&apw=&spw=
   Sensor      : GET /aircon/get_sensor_info?port=<port>&id=<username>&apw=&spw=
   Control     : GET /aircon/set_control_info?port=<port>&pow=&mode=&stemp=&...
-  Schedule    : GET /aircon/get_scdltimer_info?port=<port>&...
-                GET /aircon/get_scdltimer_body?port=<port>&target=<1|2|3>&...
-  DateTime    : GET /common/get_datetime?port=<port>&...
   Success     : ret=OK,adv=
   Token TTL   : 600 s (string) -> refresh 30 s before expiry
 
-  Confirmed modes : auto=1, dry=2, cool=3, heat=4, fan_only=6
-  Confirmed f_rate: A=auto, B=quiet, 3=low, 4=medium_low, 5=medium, 6=medium_high, 7=high
-  Confirmed swing : f_dir_ud (up/down), f_dir_lr (left/right)
-  Sensor extras   : cmpfreq (compressor frequency), mompow (compressor power draw)
-  Per-mode temps  : dt1/dt2/dt3/dt4/dt6 — must ALL be sent on every set_control call
+  Confirmed modes  : auto=1, dry=2, cool=3, heat=4, fan_only=6
+  Confirmed f_rate : A=auto, B=quiet, 3=low, 4=medium_low, 5=medium, 6=medium_high, 7=high
+  Confirmed swing  : dfd3=0 off, dfd3=1 tilt (f_dir_ud=S), dfd3=2 lr (f_dir_lr=S), dfd3=3 both
+  Sensor extras    : cmpfreq (compressor frequency Hz), mompow (compressor power draw W)
+  Per-mode temps   : dt1/dt2/dt3/dt4/dt6 — must ALL be sent on every set_control call
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
@@ -44,6 +40,9 @@ from .const import (
     DAIKIN_TO_HA_MODE,
     HA_TO_DAIKIN_FAN,
     DAIKIN_TO_HA_FAN,
+    HA_TO_DAIKIN_SWING,
+    DAIKIN_TO_HA_SWING,
+    SWING_OFF,
     MODE_STEMP_SENTINEL,
     MODE_TEMP_PARAMS,
 )
@@ -52,13 +51,12 @@ _LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://scr.daikincloud.net"
 _UA = "okhttp/4.9.2"
 
-# Fallback dt values when a mode's setpoint has never been set on this device
 _DT_FALLBACK: dict[int, str] = {
-    1: "22.0",   # auto
-    2: "M",      # dry — sentinel
-    3: "22.0",   # cool
-    4: "25.0",   # heat
-    6: "--",     # fan_only — sentinel
+    1: "22.0",
+    2: "M",
+    3: "22.0",
+    4: "25.0",
+    6: "--",
 }
 
 
@@ -80,10 +78,11 @@ class DaikinState:
     indoor_temp: float
     indoor_humidity: int
     outdoor_temp: float
-    fan_rate: str
+    fan_rate: str          # raw Daikin code: "A", "3", "B", etc.
     fan_dir: int
-    cmpfreq: int = 0     # compressor frequency Hz
-    mompow: int = 0      # compressor power draw (relative)
+    swing_mode: str = SWING_OFF   # HA label: "off", "vertical", "horizontal", "both"
+    cmpfreq: int = 0
+    mompow: int = 0
 
 
 class DaikinAuthError(Exception):
@@ -254,7 +253,6 @@ class DaikinCloudClient:
         return state, ctrl
 
     async def get_state(self, device: DaikinDevice) -> DaikinState:
-        """Convenience wrapper (kept for compatibility)."""
         state, _ = await self.get_state_with_raw(device)
         return state
 
@@ -265,6 +263,7 @@ class DaikinCloudClient:
     ) -> DaikinState:
         mode_num = int(ctrl.get("mode", 3))
         mode_str = DAIKIN_TO_HA_MODE.get(mode_num, "cool")
+
         raw_stemp = ctrl.get("stemp", "22.0")
         try:
             target_temp: float | None = (
@@ -272,7 +271,14 @@ class DaikinCloudClient:
             )
         except ValueError:
             target_temp = None
-        fan_rate = DAIKIN_TO_HA_FAN.get(ctrl.get("f_rate", "A"), "auto")
+
+        # fan_rate: store as raw Daikin code so DAIKIN_TO_HA_FAN lookups work
+        fan_rate = ctrl.get("f_rate", "A")
+
+        # swing_mode: decode dfd3 -> HA label
+        dfd3 = ctrl.get("dfd3", "0")
+        swing_mode = DAIKIN_TO_HA_SWING.get(dfd3, SWING_OFF)
+
         try:
             indoor_humidity = int(float(ctrl.get("hhum") or sensor.get("hhum", 0) or 0))
         except (ValueError, TypeError):
@@ -295,6 +301,7 @@ class DaikinCloudClient:
             mompow = int(sensor.get("mompow", 0) or 0)
         except (ValueError, TypeError):
             mompow = 0
+
         return DaikinState(
             power           = ctrl.get("pow") == "1",
             mode            = mode_str,
@@ -304,6 +311,7 @@ class DaikinCloudClient:
             outdoor_temp    = outdoor_temp,
             fan_rate        = fan_rate,
             fan_dir         = int(ctrl.get("f_dir", 0) or 0),
+            swing_mode      = swing_mode,
             cmpfreq         = cmpfreq,
             mompow          = mompow,
         )
@@ -331,13 +339,6 @@ class DaikinCloudClient:
     # ------------------------------------------------------------------
 
     async def get_schedule_info(self, device: DaikinDevice) -> dict[str, str]:
-        """Return parsed get_scdltimer_info response.
-
-        Key fields:
-          en_scdltimer : '0' or '1'  — whether scheduler is globally enabled
-          scdl_num     : number of schedule slots
-          active_no    : currently active schedule number (1-based)
-        """
         await self.ensure_token()
         text = await self._get(
             f"/aircon/get_scdltimer_info?port={device.port}&port={device.port}"
@@ -346,14 +347,6 @@ class DaikinCloudClient:
         return _parse_kv(text)
 
     async def get_schedule_body(self, device: DaikinDevice, target: int = 1) -> dict[str, str]:
-        """Return parsed get_scdltimer_body for a specific schedule slot (1-3).
-
-        Key fields:
-          en_scdltimer : whether this slot is enabled
-          scdl_per_day : max time slots per day
-          format       : always 'v1'
-          f_detail     : colon-separated field descriptor string
-        """
         await self.ensure_token()
         text = await self._get(
             f"/aircon/get_scdltimer_body?port={device.port}&target={target}"
@@ -374,14 +367,12 @@ class DaikinCloudClient:
         target_temp: float | None = None,
         fan_rate: str | None = None,
         fan_dir: int | None = None,
+        swing_mode: str | None = None,
     ) -> None:
         """Send set_control_info to the cloud.
 
-        Reads current state first (get_control_info) so we can carry forward
-        all per-mode dt/dh setpoints and only modify what was explicitly
-        requested.  Sending the full dt1-dt6 / dh1-dh6 set on every write
-        matches official app behaviour and prevents the cloud from restoring
-        a stale per-mode setpoint on the next reconciliation cycle.
+        swing_mode: HA label ("off", "vertical", "horizontal", "both").
+        Automatically resolves to the correct dfd3/f_dir_ud/f_dir_lr triplet.
         """
         await self.ensure_token()
         current = await self._get_control_info(device.port)
@@ -402,9 +393,17 @@ class DaikinCloudClient:
             else current.get("f_rate", "A")
         )
 
-        shum_val    = current.get("shum", "0")
-        fdir_ud_val = current.get("f_dir_ud", "0")
-        fdir_lr_val = current.get("f_dir_lr", "0")
+        shum_val = current.get("shum", "0")
+
+        # Swing: if caller specifies swing_mode use that, else carry forward current
+        if swing_mode is not None:
+            dfd3_val, fdir_ud_val, fdir_lr_val = HA_TO_DAIKIN_SWING.get(
+                swing_mode, ("0", "0", "0")
+            )
+        else:
+            dfd3_val    = current.get("dfd3",    "0")
+            fdir_ud_val = current.get("f_dir_ud", "0")
+            fdir_lr_val = current.get("f_dir_lr", "0")
 
         # stemp for the active mode
         sentinel = MODE_STEMP_SENTINEL.get(mode_str)
@@ -415,17 +414,12 @@ class DaikinCloudClient:
         else:
             stemp_val = current.get("stemp", "22.0")
 
-        # Build per-mode dt values — carry forward all existing setpoints,
-        # only updating the active mode's value.  This matches the official
-        # app which always sends dt1/dt2/dt3/dt4/dt6 together.
+        # Per-mode dt values — carry forward all, update active mode only
         dt_vals: dict[int, str] = {}
         for m, (dt_name, _) in MODE_TEMP_PARAMS.items():
             if m == mode_num:
-                # Active mode: use our new stemp (or sentinel)
                 dt_vals[m] = stemp_val
             else:
-                # Inactive mode: carry forward whatever the device has stored,
-                # falling back to a safe default if somehow absent
                 dt_vals[m] = current.get(dt_name) or _DT_FALLBACK.get(m, "22.0")
 
         params = (
@@ -443,11 +437,13 @@ class DaikinCloudClient:
             f"&f_dir_lr={fdir_lr_val}"
             f"&pow={pow_val}"
             f"&stemp={stemp_val}"
+            f"&dfd3={dfd3_val}"
         )
 
         _LOGGER.debug(
-            "set_control -> pow=%s mode=%s(%s) stemp=%s fan=%s dt=%s",
-            pow_val, mode_str, mode_num, stemp_val, frate_val, dt_vals,
+            "set_control -> pow=%s mode=%s(%s) stemp=%s fan=%s swing=%s(dfd3=%s ud=%s lr=%s)",
+            pow_val, mode_str, mode_num, stemp_val, frate_val,
+            swing_mode, dfd3_val, fdir_ud_val, fdir_lr_val,
         )
 
         text = await self._get(f"/aircon/set_control_info?{params}")

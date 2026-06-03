@@ -10,16 +10,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import HA_TO_DAIKIN_FAN, HA_TO_DAIKIN_MODE
+from .const import HA_TO_DAIKIN_FAN, HA_TO_DAIKIN_MODE, HA_TO_DAIKIN_SWING
 from .daikin_api import DaikinCloudClient, DaikinDevice, DaikinState, DaikinAPIError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Seconds after a write command during which scheduled polls are suppressed.
 WRITE_SETTLE_SECONDS = 20
-
-# Seconds after a write command before we do a single confirmatory poll.
-WRITE_CONFIRM_DELAY = 15
+WRITE_CONFIRM_DELAY  = 15
 
 
 @dataclass
@@ -50,17 +47,8 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         )
 
     async def _async_update_data(self) -> DaikinData:
-        """Fetch latest state from the cloud API.
-
-        Skips the poll if we are still within WRITE_SETTLE_SECONDS of a
-        write command to prevent a race between an in-flight command and
-        a scheduled poll returning stale state.
-        """
         if (monotonic() - self._last_write_time) < WRITE_SETTLE_SECONDS:
-            _LOGGER.debug(
-                "Skipping poll for %s — within write-settle window",
-                self.device.name,
-            )
+            _LOGGER.debug("Skipping poll for %s — within write-settle window", self.device.name)
             if self.data is not None:
                 return self.data
 
@@ -82,21 +70,18 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         mode: str | None = None,
         target_temp: float | None = None,
         fan_rate: str | None = None,
+        swing_mode: str | None = None,
         raw_overrides: dict[str, str] | None = None,
     ) -> None:
-        """Patch coordinator.data in-place with the values we just sent.
+        """Patch coordinator.data in-place immediately after a write command.
 
-        fan_rate must be passed as the HA label (e.g. "low", "auto").
-        This method converts it to the raw Daikin code (e.g. "3", "A")
-        before storing in DaikinState.fan_rate so that DAIKIN_TO_HA_FAN
-        lookups in climate.fan_mode always find the correct key.
+        fan_rate  : HA label ("low", "auto", etc.) — converted to raw Daikin code
+        swing_mode: HA label ("off", "vertical", etc.) — stored directly in DaikinState
         """
         if self.data is None:
             return
 
-        # Convert HA fan label → raw Daikin code for DaikinState storage.
-        # DaikinState.fan_rate mirrors what _parse_kv returns from the API
-        # (raw codes), so we must store the same type here.
+        # Convert HA fan label → raw Daikin code (must match _parse_kv format)
         raw_fan_code: str | None = None
         if fan_rate is not None:
             raw_fan_code = HA_TO_DAIKIN_FAN.get(fan_rate, "A")
@@ -104,19 +89,17 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         old_state = self.data.state
         new_state = replace(
             old_state,
-            power=power if power is not None else old_state.power,
-            mode=mode if mode is not None else old_state.mode,
-            target_temp=target_temp if target_temp is not None else old_state.target_temp,
-            # Store raw Daikin code, NOT the HA label
-            fan_rate=raw_fan_code if raw_fan_code is not None else old_state.fan_rate,
+            power       = power       if power       is not None else old_state.power,
+            mode        = mode        if mode        is not None else old_state.mode,
+            target_temp = target_temp if target_temp is not None else old_state.target_temp,
+            fan_rate    = raw_fan_code if raw_fan_code is not None else old_state.fan_rate,
+            swing_mode  = swing_mode  if swing_mode  is not None else old_state.swing_mode,
         )
 
         new_raw = dict(self.data.raw_control)
         if raw_overrides:
             new_raw.update(raw_overrides)
 
-        # Keep raw_control consistent with the patched state.
-        # All values MUST be strings — raw_control mirrors _parse_kv output.
         if power is not None:
             new_raw["pow"] = "1" if power else "0"
         if mode is not None:
@@ -125,18 +108,16 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
             new_raw["stemp"] = f"{target_temp:.1f}"
         if raw_fan_code is not None:
             new_raw["f_rate"] = raw_fan_code
+        if swing_mode is not None:
+            dfd3, fdir_ud, fdir_lr = HA_TO_DAIKIN_SWING.get(swing_mode, ("0", "0", "0"))
+            new_raw["dfd3"]    = dfd3
+            new_raw["f_dir_ud"] = fdir_ud
+            new_raw["f_dir_lr"] = fdir_lr
 
         self.async_set_updated_data(DaikinData(state=new_state, raw_control=new_raw))
-
         self._last_write_time = monotonic()
-
-        async_call_later(
-            self.hass,
-            WRITE_CONFIRM_DELAY,
-            self._async_confirm_write,
-        )
+        async_call_later(self.hass, WRITE_CONFIRM_DELAY, self._async_confirm_write)
 
     async def _async_confirm_write(self, _now=None) -> None:
-        """Confirmatory poll fired WRITE_CONFIRM_DELAY seconds after a write."""
         self._last_write_time = 0.0
         await self.async_refresh()

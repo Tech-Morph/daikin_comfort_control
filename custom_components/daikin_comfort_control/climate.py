@@ -8,6 +8,10 @@ from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
+    SWING_OFF,
+    SWING_VERTICAL,
+    SWING_HORIZONTAL,
+    SWING_BOTH,
 )
 from homeassistant.components.climate.const import FAN_AUTO, FAN_HIGH, FAN_LOW, FAN_MEDIUM
 from homeassistant.config_entries import ConfigEntry
@@ -27,7 +31,8 @@ FAN_QUIET       = "quiet"
 FAN_MEDIUM_LOW  = "medium_low"
 FAN_MEDIUM_HIGH = "medium_high"
 
-FAN_MODES = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
+FAN_MODES   = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
+SWING_MODES = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
 
 HVAC_MODES = [
     HVACMode.OFF,
@@ -49,12 +54,10 @@ HVAC_TO_DAIKIN: dict[HVACMode, str] = {v: k for k, v in DAIKIN_TO_HVAC.items()}
 
 
 def _c_to_f(celsius: float) -> float:
-    """Convert Celsius to Fahrenheit, rounded to nearest 1°F integer."""
     return round(celsius * 9 / 5 + 32)
 
 
 def _f_to_c(fahrenheit: float) -> float:
-    """Convert Fahrenheit to Celsius, rounded to nearest 0.5°C step."""
     raw = (fahrenheit - 32) * 5 / 9
     return round(raw * 2) / 2
 
@@ -75,10 +78,8 @@ async def async_setup_entry(
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     """Represents a single Daikin mini-split unit.
 
-    Temperature unit: FAHRENHEIT (native — no HA auto-conversion)
-    Range: 64–90°F in 1° increments.
-    The Daikin cloud API accepts stemp in °C; all °F↔°C conversion
-    is handled in this class.
+    Temperature: FAHRENHEIT native, 64–90°F, 1° step.
+    Swing modes: off / vertical (tilt) / horizontal / both (3D).
     """
 
     _attr_temperature_unit        = UnitOfTemperature.FAHRENHEIT
@@ -87,9 +88,11 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     _attr_max_temp                = 90.0
     _attr_hvac_modes              = HVAC_MODES
     _attr_fan_modes               = FAN_MODES
+    _attr_swing_modes             = SWING_MODES
     _attr_supported_features      = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
+        | ClimateEntityFeature.SWING_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
@@ -135,9 +138,11 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def fan_mode(self) -> str:
-        # DaikinState.fan_rate is always a raw Daikin code ("A", "3", "B" etc.)
-        # DAIKIN_TO_HA_FAN maps raw code → HA label.
         return DAIKIN_TO_HA_FAN.get(self._state.fan_rate, FAN_AUTO)
+
+    @property
+    def swing_mode(self) -> str:
+        return self._state.swing_mode
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -181,12 +186,6 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
             await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
-        """fan_mode is the HA label (e.g. "low", "auto").
-
-        Pass it as-is to set_control (which calls HA_TO_DAIKIN_FAN internally)
-        and to set_optimistic_data (which also converts via HA_TO_DAIKIN_FAN).
-        No raw_overrides needed — coordinator handles raw_control internally.
-        """
         client = self.coordinator.client
         device = self.coordinator.device
         try:
@@ -194,6 +193,17 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
             self.coordinator.set_optimistic_data(fan_rate=fan_mode)
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set fan mode %s: %s", fan_mode, err)
+            await self.coordinator.async_request_refresh()
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        """swing_mode is the HA label: off / vertical / horizontal / both."""
+        client = self.coordinator.client
+        device = self.coordinator.device
+        try:
+            await client.set_control(device, swing_mode=swing_mode)
+            self.coordinator.set_optimistic_data(swing_mode=swing_mode)
+        except DaikinAPIError as err:
+            _LOGGER.error("Failed to set swing mode %s: %s", swing_mode, err)
             await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
