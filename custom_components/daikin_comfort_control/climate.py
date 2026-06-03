@@ -17,7 +17,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, DAIKIN_TO_HA_FAN
+from .const import DOMAIN, DAIKIN_TO_HA_FAN, HA_TO_DAIKIN_FAN
 from .coordinator import DaikinCoordinator
 from .daikin_api import DaikinAPIError
 
@@ -66,7 +66,6 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     _attr_temperature_unit        = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
-    # 17.5 C / 32.5 C gives clean buffer around 64 F / 90 F after unit conversion
     _attr_min_temp                = 17.5
     _attr_max_temp                = 32.5
     _attr_hvac_modes              = HVAC_MODES
@@ -121,12 +120,14 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose outdoor temp — kept as raw °C; sensor.py provides the
-        properly unit-converted sensor entity."""
         attrs: dict[str, Any] = {}
         if self._state.outdoor_temp != 0.0:
             attrs["outdoor_temperature_c"] = self._state.outdoor_temp
         return attrs
+
+    # ------------------------------------------------------------------
+    # Service handlers — optimistic update first, no immediate refresh
+    # ------------------------------------------------------------------
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         client = self.coordinator.client
@@ -134,12 +135,15 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         try:
             if hvac_mode == HVACMode.OFF:
                 await client.set_control(device, power=False)
+                self.coordinator.set_optimistic_data(power=False)
             else:
                 daikin_mode = HVAC_TO_DAIKIN.get(hvac_mode, "cool")
                 await client.set_control(device, power=True, mode=daikin_mode)
+                self.coordinator.set_optimistic_data(power=True, mode=daikin_mode)
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set HVAC mode %s: %s", hvac_mode, err)
-        await self.coordinator.async_request_refresh()
+            # On failure do a real refresh so we show actual device state
+            await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         temp = kwargs.get(ATTR_TEMPERATURE)
@@ -149,18 +153,25 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         device = self.coordinator.device
         try:
             await client.set_control(device, target_temp=float(temp))
+            self.coordinator.set_optimistic_data(target_temp=float(temp))
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set temperature %s: %s", temp, err)
-        await self.coordinator.async_request_refresh()
+            await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         client = self.coordinator.client
         device = self.coordinator.device
         try:
             await client.set_control(device, fan_rate=fan_mode)
+            # fan_rate in DaikinState uses HA names; set_optimistic_data
+            # converts via HA_TO_DAIKIN_FAN for raw_control consistency
+            self.coordinator.set_optimistic_data(
+                fan_rate=fan_mode,
+                raw_overrides={"f_rate": HA_TO_DAIKIN_FAN.get(fan_mode, "A")},
+            )
         except DaikinAPIError as err:
             _LOGGER.error("Failed to set fan mode %s: %s", fan_mode, err)
-        await self.coordinator.async_request_refresh()
+            await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         await self.async_set_hvac_mode(

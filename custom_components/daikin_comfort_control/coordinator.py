@@ -2,15 +2,24 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
+from time import monotonic
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .daikin_api import DaikinCloudClient, DaikinDevice, DaikinState, DaikinAPIError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Seconds after a write command during which scheduled polls are suppressed.
+# Long enough to survive one full poll cycle plus Daikin cloud lag.
+WRITE_SETTLE_SECONDS = 20
+
+# Seconds after a write command before we do a single confirmatory poll.
+WRITE_CONFIRM_DELAY = 15
 
 
 @dataclass
@@ -34,6 +43,7 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
     ) -> None:
         self.client = client
         self.device = device
+        self._last_write_time: float = 0.0
         super().__init__(
             hass,
             _LOGGER,
@@ -42,7 +52,21 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         )
 
     async def _async_update_data(self) -> DaikinData:
-        """Fetch latest state from the cloud API."""
+        """Fetch latest state from the cloud API.
+
+        Skips the poll if we are still within WRITE_SETTLE_SECONDS of a
+        write command to prevent a race between an in-flight command and
+        a scheduled poll returning stale state.
+        """
+        if (monotonic() - self._last_write_time) < WRITE_SETTLE_SECONDS:
+            _LOGGER.debug(
+                "Skipping poll for %s — within write-settle window",
+                self.device.name,
+            )
+            # Return current data unchanged so no spurious state change fires.
+            if self.data is not None:
+                return self.data
+
         try:
             state, raw_control = await self.client.get_state_with_raw(self.device)
             return DaikinData(state=state, raw_control=raw_control)
@@ -52,3 +76,65 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
             raise UpdateFailed(f"API error: {err}") from err
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
+
+    @callback
+    def set_optimistic_data(
+        self,
+        *,
+        power: bool | None = None,
+        mode: str | None = None,
+        target_temp: float | None = None,
+        fan_rate: str | None = None,
+        raw_overrides: dict[str, str] | None = None,
+    ) -> None:
+        """Patch coordinator.data in-place with the values we just sent.
+
+        Called immediately after a successful set_control so the UI reflects
+        the command without waiting for the next poll.
+        """
+        if self.data is None:
+            return
+
+        old_state = self.data.state
+        new_state = replace(
+            old_state,
+            power=power if power is not None else old_state.power,
+            mode=mode if mode is not None else old_state.mode,
+            target_temp=target_temp if target_temp is not None else old_state.target_temp,
+            fan_rate=fan_rate if fan_rate is not None else old_state.fan_rate,
+        )
+
+        new_raw = dict(self.data.raw_control)
+        if raw_overrides:
+            new_raw.update(raw_overrides)
+        # Keep raw_control consistent with the patched state
+        if power is not None:
+            new_raw["pow"] = "1" if power else "0"
+        if mode is not None:
+            from .const import HA_TO_DAIKIN_MODE
+            new_raw["mode"] = HA_TO_DAIKIN_MODE.get(mode, "3")
+        if target_temp is not None:
+            new_raw["stemp"] = str(target_temp)
+        if fan_rate is not None:
+            from .const import HA_TO_DAIKIN_FAN
+            new_raw["f_rate"] = HA_TO_DAIKIN_FAN.get(fan_rate, "A")
+
+        self.async_set_updated_data(DaikinData(state=new_state, raw_control=new_raw))
+
+        # Record write time — suppresses the next scheduled poll(s)
+        self._last_write_time = monotonic()
+
+        # Schedule a single confirmatory poll after the cloud has settled
+        async_call_later(
+            self.hass,
+            WRITE_CONFIRM_DELAY,
+            self._async_confirm_write,
+        )
+
+    async def _async_confirm_write(self, _now=None) -> None:
+        """Confirmatory poll fired WRITE_CONFIRM_DELAY seconds after a write.
+
+        Bypasses the settle guard by temporarily clearing _last_write_time.
+        """
+        self._last_write_time = 0.0
+        await self.async_refresh()
