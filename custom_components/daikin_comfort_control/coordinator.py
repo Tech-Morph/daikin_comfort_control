@@ -63,7 +63,6 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
                 "Skipping poll for %s — within write-settle window",
                 self.device.name,
             )
-            # Return current data unchanged so no spurious state change fires.
             if self.data is not None:
                 return self.data
 
@@ -91,6 +90,9 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
 
         Called immediately after a successful set_control so the UI reflects
         the command without waiting for the next poll.
+
+        All raw_control values are kept as strings to match the _parse_kv
+        output format used throughout the rest of the integration.
         """
         if self.data is None:
             return
@@ -107,14 +109,18 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         new_raw = dict(self.data.raw_control)
         if raw_overrides:
             new_raw.update(raw_overrides)
-        # Keep raw_control consistent with the patched state
+
+        # Keep raw_control consistent with the patched state.
+        # All values MUST be strings — raw_control mirrors _parse_kv output.
         if power is not None:
             new_raw["pow"] = "1" if power else "0"
         if mode is not None:
             from .const import HA_TO_DAIKIN_MODE
-            new_raw["mode"] = HA_TO_DAIKIN_MODE.get(mode, "3")
+            # HA_TO_DAIKIN_MODE returns int; stringify to match _parse_kv format
+            new_raw["mode"] = str(HA_TO_DAIKIN_MODE.get(mode, 3))
         if target_temp is not None:
-            new_raw["stemp"] = str(target_temp)
+            # target_temp is stored in °C (DaikinState convention)
+            new_raw["stemp"] = f"{target_temp:.1f}"
         if fan_rate is not None:
             from .const import HA_TO_DAIKIN_FAN
             new_raw["f_rate"] = HA_TO_DAIKIN_FAN.get(fan_rate, "A")

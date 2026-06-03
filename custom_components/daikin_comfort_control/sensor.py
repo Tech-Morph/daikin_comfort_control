@@ -3,11 +3,13 @@
 Provides the following sensors per device, all grouped under the same
 device card in HA so they appear automatically on integration setup:
 
-  - Outdoor Temperature   (°C native, HA converts to user unit)
-  - Indoor Temperature    (°C native, HA converts to user unit)
-  - Indoor Humidity       (%)
-  - Fan Speed             (string: auto / quiet / low / ...)
-  - Fan Direction         (string: stopped / swing / position_N)
+  - Outdoor Temperature       (°C native, HA converts to user unit)
+  - Indoor Temperature        (°C native, HA converts to user unit)
+  - Indoor Humidity           (%)
+  - Fan Speed                 (string: auto / quiet / low / ...)
+  - Fan Direction             (string: stopped / swing / position_N)
+  - Compressor Frequency      (Hz, integer)
+  - Compressor Power          (W relative, integer)
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfFrequency, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -58,6 +60,8 @@ async def async_setup_entry(
             DaikinIndoorHumiditySensor(coordinator),
             DaikinFanSpeedSensor(coordinator),
             DaikinFanDirectionSensor(coordinator),
+            DaikinCompressorFreqSensor(coordinator),
+            DaikinCompressorPowerSensor(coordinator),
         ]
     async_add_entities(entities)
 
@@ -99,7 +103,12 @@ class _DaikinBaseSensor(CoordinatorEntity[DaikinCoordinator], SensorEntity):
 # ---------------------------------------------------------------------------
 
 class DaikinOutdoorTempSensor(_DaikinBaseSensor):
-    """Outdoor temperature from get_sensor_info (otemp)."""
+    """Outdoor temperature from get_sensor_info (otemp).
+
+    Native unit is °C; HA will auto-convert to the user's preferred unit.
+    This is intentionally separate from the climate entity which uses
+    FAHRENHEIT as its native unit — sensor.py lets HA handle conversion.
+    """
 
     _attr_name                       = "Outdoor Temperature"
     _attr_device_class               = SensorDeviceClass.TEMPERATURE
@@ -119,9 +128,9 @@ class DaikinOutdoorTempSensor(_DaikinBaseSensor):
 class DaikinIndoorTempSensor(_DaikinBaseSensor):
     """Indoor temperature from get_sensor_info (htemp).
 
-    Mirrors current_temperature on the climate entity but as a
-    standalone sensor so it can be used in automations, history graphs,
-    and Energy dashboard independently.
+    Native unit is °C; HA will auto-convert to the user's preferred unit.
+    Mirrors current_temperature on the climate entity but as a standalone
+    sensor for automations, history graphs, and Energy dashboard.
     """
 
     _attr_name                       = "Indoor Temperature"
@@ -209,3 +218,53 @@ class DaikinFanDirectionSensor(_DaikinBaseSensor):
         if raw is None:
             return None
         return FAN_DIR_UD_MAP.get(raw, f"position_{raw}")
+
+
+# ---------------------------------------------------------------------------
+# Compressor sensors (from get_sensor_info)
+# ---------------------------------------------------------------------------
+
+class DaikinCompressorFreqSensor(_DaikinBaseSensor):
+    """Compressor operating frequency in Hz (cmpfreq from get_sensor_info).
+
+    Reported as 0 when the compressor is off.  Useful for monitoring
+    load, efficiency, and diagnosing short-cycling.
+    """
+
+    _attr_name                       = "Compressor Frequency"
+    _attr_device_class               = SensorDeviceClass.FREQUENCY
+    _attr_state_class                = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfFrequency.HERTZ
+    _attr_icon                       = "mdi:sine-wave"
+
+    def __init__(self, coordinator: DaikinCoordinator) -> None:
+        super().__init__(coordinator, "cmpfreq")
+
+    @property
+    def native_value(self) -> int | None:
+        v = self._state.cmpfreq
+        # Return None when compressor is off (0) so history graph is cleaner
+        return v if v > 0 else None
+
+
+class DaikinCompressorPowerSensor(_DaikinBaseSensor):
+    """Compressor power draw (mompow from get_sensor_info).
+
+    The unit returned by the Daikin adapter is not definitively confirmed
+    as watts but is treated as such; it tracks compressor load proportionally.
+    Returns None when the compressor is off.
+    """
+
+    _attr_name                       = "Compressor Power"
+    _attr_device_class               = SensorDeviceClass.POWER
+    _attr_state_class                = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_icon                       = "mdi:lightning-bolt"
+
+    def __init__(self, coordinator: DaikinCoordinator) -> None:
+        super().__init__(coordinator, "mompow")
+
+    @property
+    def native_value(self) -> int | None:
+        v = self._state.mompow
+        return v if v > 0 else None
