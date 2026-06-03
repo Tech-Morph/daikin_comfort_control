@@ -14,7 +14,7 @@ from .daikin_api import DaikinCloudClient, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["climate", "sensor"]
+PLATFORMS = ["climate", "sensor", "switch"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -40,18 +40,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "client": client,
-        "session": session,
-        "devices": devices,
-        "coordinators": {},
-    }
-
+    coordinators: list[DaikinCoordinator] = []
     for device in devices:
         coordinator = DaikinCoordinator(hass, client, device, scan_interval)
         await coordinator.async_config_entry_first_refresh()
-        hass.data[DOMAIN][entry.entry_id]["coordinators"][device.port] = coordinator
+        coordinators.append(coordinator)
+
+    hass.data.setdefault(DOMAIN, {})
+    # Store as a flat list — all platform modules iterate over it directly
+    hass.data[DOMAIN][entry.entry_id] = coordinators
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -61,6 +58,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        data = hass.data[DOMAIN].pop(entry.entry_id)
-        await data["session"].close()
+        coordinators: list[DaikinCoordinator] = hass.data[DOMAIN].pop(entry.entry_id)
+        # Close the shared aiohttp session via the first coordinator's client
+        if coordinators:
+            await coordinators[0].client._session.close()
     return unload_ok
