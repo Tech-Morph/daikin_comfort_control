@@ -21,9 +21,10 @@ WRITE_CONFIRM_DELAY  = 15
 
 @dataclass
 class DaikinData:
-    """Combined state + raw control_info for a single device poll cycle."""
+    """Combined state + raw control_info + raw holiday for a single device poll cycle."""
     state: DaikinState
     raw_control: dict[str, str]
+    raw_holiday: dict[str, str]
 
 
 class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
@@ -53,8 +54,8 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
                 return self.data
 
         try:
-            state, raw_control = await self.client.get_state_with_raw(self.device)
-            return DaikinData(state=state, raw_control=raw_control)
+            state, raw_control, raw_holiday = await self.client.get_state_with_raw(self.device)
+            return DaikinData(state=state, raw_control=raw_control, raw_holiday=raw_holiday)
         except DaikinAuthError as err:
             raise UpdateFailed(f"Auth error: {err}") from err
         except DaikinAPIError as err:
@@ -81,7 +82,7 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
         if self.data is None:
             return
 
-        # Convert HA fan label → raw Daikin code (must match _parse_kv format)
+        # Convert HA fan label -> raw Daikin code (must match _parse_kv format)
         raw_fan_code: str | None = None
         if fan_rate is not None:
             raw_fan_code = HA_TO_DAIKIN_FAN.get(fan_rate, "A")
@@ -110,11 +111,38 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
             new_raw["f_rate"] = raw_fan_code
         if swing_mode is not None:
             dfd3, fdir_ud, fdir_lr = HA_TO_DAIKIN_SWING.get(swing_mode, ("0", "0", "0"))
-            new_raw["dfd3"]    = dfd3
+            new_raw["dfd3"]     = dfd3
             new_raw["f_dir_ud"] = fdir_ud
             new_raw["f_dir_lr"] = fdir_lr
 
-        self.async_set_updated_data(DaikinData(state=new_state, raw_control=new_raw))
+        self.async_set_updated_data(
+            DaikinData(
+                state=new_state,
+                raw_control=new_raw,
+                raw_holiday=dict(self.data.raw_holiday),
+            )
+        )
+        self._last_write_time = monotonic()
+        async_call_later(self.hass, WRITE_CONFIRM_DELAY, self._async_confirm_write)
+
+    @callback
+    def set_optimistic_vacation(self, *, enable: bool) -> None:
+        """Patch vacation state immediately after set_holiday write."""
+        if self.data is None:
+            return
+
+        new_state = replace(self.data.state, vacation=enable)
+        new_holiday = dict(self.data.raw_holiday)
+        new_holiday["en_hol"]      = "1" if enable else "0"
+        new_holiday["holiday_flg"] = "1" if enable else "0"
+
+        self.async_set_updated_data(
+            DaikinData(
+                state=new_state,
+                raw_control=dict(self.data.raw_control),
+                raw_holiday=new_holiday,
+            )
+        )
         self._last_write_time = monotonic()
         async_call_later(self.hass, WRITE_CONFIRM_DELAY, self._async_confirm_write)
 

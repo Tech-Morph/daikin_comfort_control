@@ -15,6 +15,10 @@ Fully confirmed via mitmproxy traffic capture (2026-06-02/03):
   Device list : GET /common/device_list
   Poll        : GET /aircon/get_control_info?port=<port>&id=<username>&apw=&spw=
   Sensor      : GET /aircon/get_sensor_info?port=<port>&id=<username>&apw=&spw=
+  Vacation get: GET /common/get_holiday?port=<port>&port=<port>&apw=&id=<username>&spw=
+                Response: ret=OK,en_hol=0,holiday_flg=0
+  Vacation set: GET /common/set_holiday?port=<port>&en_hol=1|0
+                Response: ret=OK
   Control     : GET /aircon/set_control_info?port=<port>&pow=&mode=&stemp=&...
   Success     : ret=OK,adv=
   Token TTL   : 600 s (string) -> refresh 30 s before expiry
@@ -81,6 +85,7 @@ class DaikinState:
     fan_rate: str          # raw Daikin code: "A", "3", "B", etc.
     fan_dir: int
     swing_mode: str = SWING_OFF   # HA label: "off", "vertical", "horizontal", "both"
+    vacation: bool = False        # en_hol=1 means vacation mode is active
     cmpfreq: int = 0
     mompow: int = 0
 
@@ -237,29 +242,61 @@ class DaikinCloudClient:
         return _parse_kv(text)
 
     # ------------------------------------------------------------------
+    # Vacation mode
+    # ------------------------------------------------------------------
+
+    async def get_vacation(self, device: DaikinDevice) -> dict[str, str]:
+        """Return parsed get_holiday response.
+
+        Keys: ret, en_hol ("0"/"1"), holiday_flg ("0"/"1").
+        en_hol=1 means vacation mode is currently enabled.
+        """
+        text = await self._get(
+            f"/common/get_holiday"
+            f"?port={device.port}&port={device.port}&apw=&id={self._username}&spw="
+        )
+        return _parse_kv(text)
+
+    async def set_vacation(self, device: DaikinDevice, *, enable: bool) -> None:
+        """Enable or disable vacation mode.
+
+        GET /common/set_holiday?port=<port>&en_hol=1|0
+        Response: ret=OK
+        """
+        await self.ensure_token()
+        en = "1" if enable else "0"
+        text = await self._get(f"/common/set_holiday?port={device.port}&en_hol={en}")
+        kv = _parse_kv(text)
+        if kv.get("ret") != "OK":
+            raise DaikinAPIError(f"set_holiday failed: {text[:200]}")
+        _LOGGER.debug("Vacation mode set to %s -> %s", en, text.strip())
+
+    # ------------------------------------------------------------------
     # State polling
     # ------------------------------------------------------------------
 
     async def get_state_with_raw(
         self, device: DaikinDevice
-    ) -> tuple[DaikinState, dict[str, str]]:
-        """Return (DaikinState, raw_control_kv) — control + sensor fetched in parallel."""
+    ) -> tuple[DaikinState, dict[str, str], dict[str, str]]:
+        """Return (DaikinState, raw_control_kv, raw_holiday_kv) — all three fetched in parallel."""
         await self.ensure_token()
-        ctrl, sensor = await asyncio.gather(
+        ctrl, sensor, holiday = await asyncio.gather(
             asyncio.create_task(self._get_control_info(device.port)),
             asyncio.create_task(self._get_sensor_info(device.port)),
+            asyncio.create_task(self.get_vacation(device)),
         )
-        state = self._build_state(ctrl, sensor)
-        return state, ctrl
+        state = self._build_state(ctrl, sensor, holiday)
+        return state, ctrl, holiday
 
     async def get_state(self, device: DaikinDevice) -> DaikinState:
-        state, _ = await self.get_state_with_raw(device)
+        state, _, _ = await self.get_state_with_raw(device)
         return state
 
     def _build_state(
         self,
         ctrl: dict[str, str],
         sensor: dict[str, str],
+        holiday: dict[str, str] | None = None,
     ) -> DaikinState:
         mode_num = int(ctrl.get("mode", 3))
         mode_str = DAIKIN_TO_HA_MODE.get(mode_num, "cool")
@@ -278,6 +315,9 @@ class DaikinCloudClient:
         # swing_mode: decode dfd3 -> HA label
         dfd3 = ctrl.get("dfd3", "0")
         swing_mode = DAIKIN_TO_HA_SWING.get(dfd3, SWING_OFF)
+
+        # vacation: en_hol=1 means active
+        vacation = (holiday or {}).get("en_hol", "0") == "1"
 
         try:
             indoor_humidity = int(float(ctrl.get("hhum") or sensor.get("hhum", 0) or 0))
@@ -312,6 +352,7 @@ class DaikinCloudClient:
             fan_rate        = fan_rate,
             fan_dir         = int(ctrl.get("f_dir", 0) or 0),
             swing_mode      = swing_mode,
+            vacation        = vacation,
             cmpfreq         = cmpfreq,
             mompow          = mompow,
         )
