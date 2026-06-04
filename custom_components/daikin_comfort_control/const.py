@@ -17,6 +17,10 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_UID      = "uid"
 
+# Device UID captured via mitmproxy — must match the value registered
+# with Daikin cloud or device_list returns empty.
+DEFAULT_UID = "dcd2e719644c4716afc1f729e98b609c"
+
 # Polling interval
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 
@@ -28,8 +32,6 @@ DAIKIN_MODE_HEAT = 4
 DAIKIN_MODE_FAN  = 6
 
 # Fan rate — 'A' = auto confirmed from capture (f_rate=A in set_control_info)
-# f_rate values seen: A=auto, 1=quiet, 2=low, 3=medium, 4=high, 5=powerful
-# Maps between Daikin f_rate string and HA fan mode string
 DAIKIN_FAN_AUTO = "A"
 
 DAIKIN_TO_HA_FAN: dict[str, str] = {
@@ -48,7 +50,6 @@ DAIKIN_SWING_OFF = "0"
 DAIKIN_SWING_ON  = "1"
 
 # Temperature limits (Fahrenheit — the app displays in °F for US/reg=us)
-# Daikin BRP069C4x range: 60–86°F (confirmed: hmlmt_l=10.0°C in model info)
-MIN_TEMP_F  = 60.0
-MAX_TEMP_F  = 86.0
+MIN_TEMP_F  = 64.0
+MAX_TEMP_F  = 90.0
 TEMP_STEP_F = 1.0
