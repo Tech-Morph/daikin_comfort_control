@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 import voluptuous as vol
@@ -17,11 +16,11 @@ from .exceptions import DaikinApiError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Only ask the user for credentials — uid is auto-generated
 STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_UID):      str,
     }
 )
 
@@ -37,15 +36,11 @@ class DaikinComfortControlConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Generate a stable random device UID for x-daikin-uid header.
-            # Format matches what the Daikin app sends: 32 hex chars, no dashes.
-            uid = uuid.uuid4().hex
-
             session = async_create_clientsession(self.hass)
             api = DaikinComfortControlAPI(
                 username=user_input[CONF_USERNAME],
                 password=user_input[CONF_PASSWORD],
-                uid=uid,
+                uid=user_input[CONF_UID],
                 session=session,
             )
             try:
@@ -62,11 +57,7 @@ class DaikinComfortControlConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=user_input[CONF_USERNAME],
-                    data={
-                        CONF_USERNAME: user_input[CONF_USERNAME],
-                        CONF_PASSWORD: user_input[CONF_PASSWORD],
-                        CONF_UID:      uid,
-                    },
+                    data=user_input,
                 )
 
         return self.async_show_form(
