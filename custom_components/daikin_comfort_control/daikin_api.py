@@ -1,49 +1,63 @@
 """Async API client for Daikin Comfort Control (scr.daikincloud.net).
 
-All requests confirmed via mitmproxy capture of the official
-Daikin Comfort Control Android app (okhttp/4.9.2).
+All endpoints and schemas confirmed via mitmproxy capture of the official
+Daikin Comfort Control Android app (okhttp/4.9.2) on 2026-06-04.
 
-Auth flow:
-  POST /common/login
-  Headers: x-daikin-uid: <uid>, content-type: application/x-www-form-urlencoded; charset=utf-8
+=== AUTH ===
+POST /common/login
+  Headers: x-daikin-uid: <uid>, content-type: application/x-www-form-urlencoded
   Body:    grant_type=password&scope=smart_app&username=<u>&password=<p>
+  Response (JSON):
+    {"access_token": "<tok>", "refresh_token": "<tok>", "expires_in": "600"}
 
-All subsequent requests:
-  Headers: authentication: bearer <token>   (non-standard name, lowercase)
-           x-daikin-uid: <uid>
-           user-agent: okhttp/4.9.2
+=== ALL SUBSEQUENT REQUESTS ===
+  Headers:
+    authentication: bearer <token>    <- non-standard header name, lowercase!
+    x-daikin-uid: <uid>
+    user-agent: okhttp/4.9.2
 
-Control read:
-  GET /aircon/get_control_info?port=30050&id=<username>&apw=&spw=
+=== DEVICE LIST ===
+GET /common/device_list
+  Response (text/plain) — single flat KV string, ONE device per account:
+    ret=OK,type=aircon,ver=3_1_0,port=30050,id=TechMorph,pw=,reg=us,
+    pow=1,err=0,name=DaikinAP07464,...
 
-Control write:
-  GET /aircon/set_control_info?port=30050&pow=1&mode=3&stemp=20.5&dt3=20.5
-                               &f_rate=A&f_dir_ud=0&f_dir_lr=0&shum=0&dh3=0
+=== CONTROL STATE ===
+GET /aircon/get_control_info?port=30050&apw=&id=<username>&spw=
+  Response: ret=OK,pow=1,mode=3,stemp=19.5,shum=0,...,f_rate=5,
+            f_dir_ud=0,f_dir_lr=0,...
+
+GET /aircon/get_sensor_info?port=30050&id=&spw=   <- id is BLANK
+  Response: ret=OK,htemp=18.0,hhum=50,otemp=15.0,err=0,cmpfreq=18,mompow=2
+
+=== SET CONTROL ===
+GET /aircon/set_control_info?port=30050&pow=1&mode=3&stemp=20.5&dt3=20.5
+                             &f_rate=A&shum=0&f_dir_ud=0&f_dir_lr=0&dh3=0
+  NOTE: dt3 must mirror stemp for mode=3. dh3=0 required.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import aiohttp
 
-from .const import (
-    BASE_URL,
-    ENDPOINT_AUTH,
-    ENDPOINT_AUTH_REFRESH,
-    ENDPOINT_DEVICES,
-    ENDPOINT_GET_CONTROL,
-    ENDPOINT_SET_CONTROL,
-)
+from .const import BASE_URL
 from .exceptions import DaikinApiError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 15
-# Must match the app or the server may reject requests
 _USER_AGENT = "okhttp/4.9.2"
+
+_EP_LOGIN        = "/common/login"
+_EP_DEVICE_LIST  = "/common/device_list"
+_EP_SENSOR_INFO  = "/aircon/get_sensor_info"
+_EP_CONTROL_INFO = "/aircon/get_control_info"
+_EP_SET_CONTROL  = "/aircon/set_control_info"
 
 
 class DaikinComfortControlAPI:
@@ -58,128 +72,147 @@ class DaikinComfortControlAPI:
     ) -> None:
         self._username = username
         self._password = password
-        self._uid = uid          # x-daikin-uid — static app device fingerprint
+        self._uid = uid
         self._session = session
         self._access_token: str | None = None
         self._refresh_token: str | None = None
+        self._token_expires_at: float = 0.0
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ auth
 
     async def authenticate(self) -> None:
-        """Login — form-encoded body, uid header, no bearer token yet."""
+        """Login with username/password. Response is JSON."""
         payload = aiohttp.FormData(quote_fields=False)
         payload.add_field("grant_type", "password")
         payload.add_field("scope",      "smart_app")
         payload.add_field("username",   self._username)
         payload.add_field("password",   self._password)
 
-        data = await self._request(
-            "POST", ENDPOINT_AUTH, data=payload, authenticated=False
-        )
+        data = await self._request("POST", _EP_LOGIN, data=payload, authenticated=False)
 
-        # Response may be JSON dict or plain-text key=value
-        if isinstance(data, str):
-            parsed = _parse_kv(data)
-        else:
-            parsed = data
+        # Response is JSON but handle KV string defensively
+        parsed = _parse_kv(data) if isinstance(data, str) else (data or {})
 
-        self._access_token = (
-            parsed.get("accessToken") or parsed.get("access_token")
-        )
-        self._refresh_token = (
-            parsed.get("refreshToken") or parsed.get("refresh_token")
-        )
-        if not self._access_token:
-            _LOGGER.error("Login raw response (no token found): %s", data)
-            raise DaikinAuthError("No access token in login response")
-        _LOGGER.debug("Daikin auth successful")
-
-    async def _refresh_access_token(self) -> None:
-        if not self._refresh_token:
-            raise DaikinAuthError("No refresh token available")
-        payload = aiohttp.FormData(quote_fields=False)
-        payload.add_field("refreshToken", self._refresh_token)
+        self._access_token  = parsed.get("access_token") or parsed.get("accessToken")
+        self._refresh_token = parsed.get("refresh_token") or parsed.get("refreshToken")
         try:
-            data = await self._request(
-                "POST", ENDPOINT_AUTH_REFRESH, data=payload, authenticated=False
-            )
-            if isinstance(data, str):
-                data = _parse_kv(data)
-            self._access_token = (
-                data.get("accessToken") or data.get("access_token")
-            )
-            if not self._access_token:
-                raise DaikinAuthError("Token refresh returned no access token")
-            _LOGGER.debug("Daikin token refreshed")
-        except DaikinApiError as err:
-            raise DaikinAuthError(f"Token refresh failed: {err}") from err
+            expires_in = int(parsed.get("expires_in", 600))
+        except (ValueError, TypeError):
+            expires_in = 600
+        # Re-auth 30s before expiry
+        self._token_expires_at = time.monotonic() + expires_in - 30
+
+        if not self._access_token:
+            _LOGGER.error("Login response contained no token: %s", data)
+            raise DaikinAuthError("No access token in login response")
+        _LOGGER.debug("Daikin auth OK, token valid for %ds", expires_in)
+
+    async def _ensure_token(self) -> None:
+        """Re-authenticate proactively when token is expired or missing."""
+        if not self._access_token or time.monotonic() >= self._token_expires_at:
+            async with self._lock:
+                if not self._access_token or time.monotonic() >= self._token_expires_at:
+                    _LOGGER.debug("Token expired/missing — re-authenticating")
+                    await self.authenticate()
 
     # --------------------------------------------------------------- devices
 
     async def get_devices(self) -> list[dict[str, Any]]:
-        """Return list of all registered devices.
+        """Return list of registered devices.
 
-        Logs the raw response at DEBUG level so we can discover the exact schema.
-        Enable debug logging for daikin_comfort_control to see it.
+        Server returns a single flat KV string (confirmed from capture):
+          ret=OK,type=aircon,...,port=30050,id=TechMorph,...,name=DaikinAP07464,...
+        Parsed and returned as a single-element list.
         """
-        result = await self._request("GET", ENDPOINT_DEVICES)
-        _LOGGER.debug(
-            "get_devices raw response | type=%s | value=%s",
-            type(result).__name__, result
-        )
+        raw = await self._request("GET", _EP_DEVICE_LIST)
+        _LOGGER.debug("device_list raw: %s", raw)
 
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            return result.get("devices", result.get("deviceList", [result]))
-        # Plain-text or unexpected type — log it, return empty so setup proceeds
-        _LOGGER.warning(
-            "get_devices: unexpected response type %s: %s — "
-            "paste this into the project issue tracker to map the schema",
-            type(result).__name__, result
-        )
+        if isinstance(raw, list):
+            return raw
+
+        if isinstance(raw, dict):
+            if "id" in raw or "deviceId" in raw:
+                return [raw]
+            return raw.get("devices", raw.get("deviceList", [raw]))
+
+        if isinstance(raw, str):
+            parsed = _parse_kv(raw)
+            if parsed.get("ret") == "OK":
+                # Use ssid as name fallback (confirmed: ssid=DaikinAP07464)
+                if "name" not in parsed:
+                    parsed["name"] = parsed.get("ssid", parsed.get("id", "Daikin"))
+                return [parsed]
+            _LOGGER.warning("device_list ret!=OK: %s", raw)
+            return []
+
+        _LOGGER.warning("device_list unexpected type %s: %s", type(raw).__name__, raw)
         return []
 
-    async def get_device(self, device_id: str) -> dict[str, Any]:
-        """Return current control state for a device.
+    async def get_device_state(self, device_id: str) -> dict[str, Any]:
+        """Fetch combined control + sensor state.
 
-        Confirmed params: port=30050, id=<username>, apw='', spw=''
+        Confirmed endpoint sequence from mitmproxy:
+          1. GET /aircon/get_control_info?port=30050&apw=&id=<username>&spw=
+             -> ret=OK,pow=1,mode=3,stemp=19.5,shum=0,...,f_rate=5,f_dir_ud=0,...
+          2. GET /aircon/get_sensor_info?port=30050&id=&spw=  (id is BLANK)
+             -> ret=OK,htemp=18.0,hhum=50,otemp=15.0,cmpfreq=18,mompow=2
+
+        Both plain-text KV. Merged into one dict (control takes precedence).
         """
-        result = await self._request(
-            "GET",
-            ENDPOINT_GET_CONTROL,
-            params={
-                "port": "30050",
-                "id":   self._username,
-                "apw":  "",
-                "spw":  "",
-            },
+        # 1. Control state — id=username required
+        ctrl_raw = await self._request(
+            "GET", _EP_CONTROL_INFO,
+            params={"port": "30050", "apw": "", "id": self._username, "spw": ""},
         )
-        _LOGGER.debug("get_device raw response: %s", result)
-        if isinstance(result, str):
-            return _parse_kv(result)
-        if isinstance(result, dict):
-            return result
-        return {}
+        _LOGGER.debug("get_control_info raw: %s", ctrl_raw)
+        ctrl = _parse_kv(ctrl_raw) if isinstance(ctrl_raw, str) else (ctrl_raw or {})
+
+        # 2. Sensor state — id is blank (confirmed from capture)
+        sensor_raw = await self._request(
+            "GET", _EP_SENSOR_INFO,
+            params={"port": "30050", "id": "", "spw": ""},
+        )
+        _LOGGER.debug("get_sensor_info raw: %s", sensor_raw)
+        sensor = _parse_kv(sensor_raw) if isinstance(sensor_raw, str) else (sensor_raw or {})
+
+        # Merge: sensor fills in temps, control state takes precedence
+        combined = {**sensor, **ctrl}
+
+        if combined.get("ret") != "OK":
+            raise DaikinApiError(
+                f"Device state error for {device_id} — "
+                f"ctrl={ctrl_raw!r:.120} sensor={sensor_raw!r:.120}"
+            )
+
+        return combined
+
+    # Alias so coordinator continues working without changes
+    async def get_device(self, device_id: str) -> dict[str, Any]:
+        return await self.get_device_state(device_id)
 
     async def set_device_parameters(
         self, device_id: str, params: dict[str, Any]
     ) -> None:
-        """Send control parameters.
+        """Send control parameters via set_control_info (GET with query params).
 
-        Confirmed: uses GET with query params, not PUT/POST.
-        Always includes port=30050. When setting stemp, dt3 must
-        mirror it and dh3=0 must be present (confirmed via mitmproxy).
+        Confirmed from mitmproxy: uses GET, not PUT/POST.
+        dt3 must mirror stemp. dh3=0 required when setting temperature.
         """
         base: dict[str, Any] = {"port": "30050"}
         base.update(params)
-        # Mirror stemp -> dt3 if caller didn't already include it
-        if "stemp" in base and "dt3" not in base:
-            base["dt3"] = base["stemp"]
-        if "stemp" in base and "dh3" not in base:
-            base["dh3"] = "0"
-        await self._request("GET", ENDPOINT_SET_CONTROL, params=base)
+
+        if "stemp" in base:
+            if "dt3" not in base:
+                base["dt3"] = base["stemp"]
+            if "dh3" not in base:
+                base["dh3"] = "0"
+
+        result_raw = await self._request("GET", _EP_SET_CONTROL, params=base)
+        result = _parse_kv(result_raw) if isinstance(result_raw, str) else (result_raw or {})
+        if result.get("ret") != "OK":
+            raise DaikinApiError(f"set_control_info failed: {result_raw!r:.200}")
+        _LOGGER.debug("set_control_info OK params=%s", params)
 
     # --------------------------------------------------------- http plumbing
 
@@ -191,21 +224,18 @@ class DaikinComfortControlAPI:
         data: aiohttp.FormData | None = None,
         params: dict | None = None,
         authenticated: bool = True,
-        _retry_auth: bool = True,
+        _retry: bool = True,
     ) -> Any:
-        url = BASE_URL + path
+        if authenticated:
+            await self._ensure_token()
 
-        # x-daikin-uid and user-agent sent on EVERY request including login
+        url = BASE_URL + path
         headers: dict[str, str] = {
             "x-daikin-uid":    self._uid,
             "user-agent":      _USER_AGENT,
             "accept-encoding": "gzip",
         }
-
-        # Bearer token added after login; login itself is unauthenticated
-        if authenticated:
-            if not self._access_token:
-                await self.authenticate()
+        if authenticated and self._access_token:
             headers["authentication"] = f"bearer {self._access_token}"
 
         try:
@@ -213,33 +243,31 @@ class DaikinComfortControlAPI:
                 async with self._session.request(
                     method, url, data=data, params=params, headers=headers
                 ) as resp:
-                    if resp.status == 401 and authenticated and _retry_auth:
-                        _LOGGER.debug("Got 401 — attempting token refresh")
+                    if resp.status == 401 and authenticated and _retry:
+                        _LOGGER.debug("401 — forcing re-auth")
                         async with self._lock:
-                            try:
-                                await self._refresh_access_token()
-                            except DaikinAuthError:
-                                await self.authenticate()
+                            self._access_token = None
+                            self._token_expires_at = 0.0
                         return await self._request(
                             method, path,
                             data=data, params=params,
-                            authenticated=True, _retry_auth=False,
+                            authenticated=True, _retry=False,
                         )
                     if resp.status == 401:
                         raise DaikinAuthError("Authentication failed (401)")
                     if resp.status == 429:
-                        raise DaikinApiError("Rate limited by Daikin cloud (429)")
+                        raise DaikinApiError("Rate limited (429)")
                     if not resp.ok:
                         text = await resp.text()
                         raise DaikinApiError(
-                            f"API error {resp.status} for {method} {path}: {text[:200]}"
+                            f"{method} {path} -> HTTP {resp.status}: {text[:200]}"
                         )
-                    if resp.content_type and "json" in resp.content_type:
+                    ct = resp.content_type or ""
+                    if "json" in ct:
                         return await resp.json()
-                    # Plain-text response (e.g. ret=OK,pow=1,... from control endpoints)
                     return await resp.text()
         except asyncio.TimeoutError as err:
-            raise DaikinApiError(f"Request timed out: {method} {path}") from err
+            raise DaikinApiError(f"Timeout: {method} {path}") from err
         except aiohttp.ClientError as err:
             raise DaikinApiError(f"Network error: {err}") from err
 
@@ -247,9 +275,12 @@ class DaikinComfortControlAPI:
 # ------------------------------------------------------------------ helpers
 
 def _parse_kv(text: str) -> dict[str, str]:
-    """Parse Daikin-style key=value,key=value plain-text responses.
+    """Parse Daikin plain-text key=value,key=value responses.
 
-    Example: 'ret=OK,pow=1,mode=3,stemp=20.5,f_rate=A'
+    Confirmed response examples:
+      'ret=OK,pow=1,mode=3,stemp=19.5,shum=0,f_rate=5,f_dir_ud=0,...'
+      'ret=OK,htemp=18.0,hhum=50,otemp=15.0,err=0,cmpfreq=18,mompow=2'
+      'ret=OK,type=aircon,...,port=30050,id=TechMorph,...'
     """
     result: dict[str, str] = {}
     for pair in text.split(","):
