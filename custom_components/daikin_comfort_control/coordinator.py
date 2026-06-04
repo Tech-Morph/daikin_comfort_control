@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -18,6 +19,10 @@ from .exceptions import DaikinApiError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
+# How long to suppress cloud polls after a set_control command.
+# Daikin cloud propagation lag is ~5-15s; 20s gives comfortable headroom.
+COMMAND_COOLDOWN_SECONDS = 20
+
 
 @dataclass
 class DaikinDeviceData:
@@ -30,7 +35,7 @@ class DaikinDeviceData:
 
     # Power / mode
     power:   bool  = False
-    mode:    int   = DAIKIN_MODE_COOL  # raw Daikin integer
+    mode:    int   = DAIKIN_MODE_COOL
 
     # Temperatures (Celsius)
     target_temp:  float = 22.0
@@ -41,20 +46,20 @@ class DaikinDeviceData:
     indoor_humidity: int = 0
 
     # Fan
-    fan_rate:  str = "A"  # raw Daikin key, e.g. "A" = auto
+    fan_rate:  str = "A"
 
-    # Swing (f_dir_ud / f_dir_lr mapped to HA swing labels)
+    # Swing
     f_dir_ud: str = "0"
     f_dir_lr: str = "0"
 
-    # Compressor diagnostics (from get_sensor_info)
+    # Compressor diagnostics
     cmpfreq: int = 0
     mompow:  int = 0
 
     # Vacation / holiday mode
     vacation: bool = False
 
-    # Raw response preserved for sensors that need uncommon fields
+    # Raw response preserved for sensors
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -99,7 +104,7 @@ def _parse_device(raw: dict[str, Any], device_id: str) -> DaikinDeviceData:
 
 
 class DaikinCoordinator(DataUpdateCoordinator[DaikinDeviceData]):
-    """Fetch and cache Daikin device state as a typed DaikinDeviceData object."""
+    """Fetch and cache Daikin device state."""
 
     def __init__(
         self,
@@ -119,9 +124,21 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinDeviceData]):
         self.api = api
         self.device_id = device_id
         self.device_name = device_name
+        # Timestamp of last set_control command (monotonic). 0 = never sent.
+        self._command_sent_at: float = 0.0
 
     async def _async_update_data(self) -> DaikinDeviceData:
-        """Fetch device state and return a parsed DaikinDeviceData."""
+        """Fetch device state, skipping the network call during cooldown."""
+        elapsed = time.monotonic() - self._command_sent_at
+        if self._command_sent_at and elapsed < COMMAND_COOLDOWN_SECONDS:
+            _LOGGER.debug(
+                "Skipping poll for %s — within command cooldown (%.1fs remaining)",
+                self.device_id,
+                COMMAND_COOLDOWN_SECONDS - elapsed,
+            )
+            # Return the current optimistic data unchanged
+            return self.data if self.data is not None else DaikinDeviceData(device_id=self.device_id)
+
         try:
             raw = await self.api.get_device(self.device_id)
             return _parse_device(raw, self.device_id)
@@ -131,18 +148,16 @@ class DaikinCoordinator(DataUpdateCoordinator[DaikinDeviceData]):
             raise UpdateFailed(f"Error polling Daikin device {self.device_id}: {err}") from err
 
     # ------------------------------------------------------------------
-    # Optimistic update helpers — called by platform entities after a
-    # successful set_control call so the UI reflects the new state
-    # immediately without waiting for the next poll cycle.
+    # Optimistic helpers — called by entities after a successful set_control.
+    # Every call resets the cooldown timer.
     # ------------------------------------------------------------------
 
     def _current(self) -> DaikinDeviceData:
-        """Return current data, initialising a blank record if None."""
         return self.data if self.data is not None else DaikinDeviceData(device_id=self.device_id)
 
     def _apply(self, **kwargs: Any) -> None:
-        """Patch fields onto a copy of current data and notify listeners."""
         import dataclasses
+        self._command_sent_at = time.monotonic()
         updated = dataclasses.replace(self._current(), **kwargs)
         self.async_set_updated_data(updated)
 
