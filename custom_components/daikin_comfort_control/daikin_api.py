@@ -1,4 +1,14 @@
-"""Async API client for Daikin Comfort Control (api.daikinskyport.com)."""
+"""Async API client for Daikin Comfort Control (scr.daikincloud.net).
+
+Auth confirmed via mitmproxy 2026-06-02:
+  POST /common/login
+  Content-Type: application/x-www-form-urlencoded
+  Body: grant_type=password&scope=smart_app&username=<u>&password=<p>
+
+  Subsequent requests use a non-standard header:
+  authentication: bearer <token>          (NOT Authorization)
+  x-daikin-uid: <device-uid>             (added per-request in set_device_parameters)
+"""
 
 from __future__ import annotations
 
@@ -14,6 +24,7 @@ from .const import (
     ENDPOINT_AUTH_REFRESH,
     ENDPOINT_DEVICE,
     ENDPOINT_DEVICES,
+    ENDPOINT_SET_CONTROL,
 )
 from .exceptions import DaikinApiError, DaikinAuthError
 
@@ -23,7 +34,7 @@ REQUEST_TIMEOUT = 15
 
 
 class DaikinComfortControlAPI:
-    """Thin async client for the Daikin Skyport cloud API."""
+    """Thin async client for the Daikin Comfort Control cloud API."""
 
     def __init__(self, username: str, password: str, session: aiohttp.ClientSession) -> None:
         self._username = username
@@ -36,11 +47,24 @@ class DaikinComfortControlAPI:
     # ------------------------------------------------------------------ auth
 
     async def authenticate(self) -> None:
-        """Login with username/password and store tokens."""
-        payload = {"username": self._username, "password": self._password}
-        data = await self._request("POST", ENDPOINT_AUTH, json=payload, authenticated=False)
-        self._access_token = data.get("accessToken") or data.get("access_token")
-        self._refresh_token = data.get("refreshToken") or data.get("refresh_token")
+        """Login with username/password using form-encoded body (confirmed via mitmproxy)."""
+        # Must be x-www-form-urlencoded with grant_type + scope — NOT JSON
+        payload = aiohttp.FormData()
+        payload.add_field("grant_type", "password")
+        payload.add_field("scope", "smart_app")
+        payload.add_field("username", self._username)
+        payload.add_field("password", self._password)
+
+        data = await self._request("POST", ENDPOINT_AUTH, data=payload, authenticated=False)
+
+        self._access_token = (
+            data.get("accessToken")
+            or data.get("access_token")
+        )
+        self._refresh_token = (
+            data.get("refreshToken")
+            or data.get("refresh_token")
+        )
         if not self._access_token:
             raise DaikinAuthError("No access token in login response")
         _LOGGER.debug("Daikin auth successful")
@@ -49,12 +73,15 @@ class DaikinComfortControlAPI:
         """Use the refresh token to obtain a new access token."""
         if not self._refresh_token:
             raise DaikinAuthError("No refresh token available — re-login required")
-        payload = {"refreshToken": self._refresh_token}
+        payload = aiohttp.FormData()
+        payload.add_field("refreshToken", self._refresh_token)
         try:
             data = await self._request(
-                "POST", ENDPOINT_AUTH_REFRESH, json=payload, authenticated=False
+                "POST", ENDPOINT_AUTH_REFRESH, data=payload, authenticated=False
             )
-            self._access_token = data.get("accessToken") or data.get("access_token")
+            self._access_token = (
+                data.get("accessToken") or data.get("access_token")
+            )
             if not self._access_token:
                 raise DaikinAuthError("Token refresh returned no access token")
             _LOGGER.debug("Daikin token refreshed")
@@ -68,16 +95,19 @@ class DaikinComfortControlAPI:
         return await self._request("GET", ENDPOINT_DEVICES)
 
     async def get_device(self, device_id: str) -> dict[str, Any]:
-        """Return state of a single device."""
-        path = ENDPOINT_DEVICE.format(device_id=device_id)
-        return await self._request("GET", path)
+        """Return current control state for a single device."""
+        return await self._request(
+            "GET", ENDPOINT_DEVICE, params={"port": "30050", "id": self._username}
+        )
 
     async def set_device_parameters(
         self, device_id: str, params: dict[str, Any]
     ) -> None:
-        """Send control parameters to a device via PUT."""
-        path = ENDPOINT_DEVICE.format(device_id=device_id)
-        await self._request("PUT", path, json=params)
+        """Send control parameters to a device via GET set_control_info."""
+        # Confirmed via mitmproxy: control writes are GET requests with query params
+        base_params = {"port": "30050"}
+        base_params.update(params)
+        await self._request("GET", ENDPOINT_SET_CONTROL, params=base_params)
 
     # --------------------------------------------------------- http plumbing
 
@@ -86,21 +116,25 @@ class DaikinComfortControlAPI:
         method: str,
         path: str,
         *,
+        data: aiohttp.FormData | None = None,
         json: dict | None = None,
+        params: dict | None = None,
         authenticated: bool = True,
         _retry_auth: bool = True,
     ) -> Any:
         url = BASE_URL + path
-        headers = {"Content-Type": "application/json"}
+
+        # Non-standard auth header confirmed by mitmproxy: 'authentication' not 'Authorization'
+        headers: dict[str, str] = {}
         if authenticated:
             if not self._access_token:
                 await self.authenticate()
-            headers["Authorization"] = f"Bearer {self._access_token}"
+            headers["authentication"] = f"bearer {self._access_token}"
 
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
                 async with self._session.request(
-                    method, url, json=json, headers=headers
+                    method, url, data=data, json=json, params=params, headers=headers
                 ) as resp:
                     if resp.status == 401 and authenticated and _retry_auth:
                         _LOGGER.debug("Got 401 — attempting token refresh")
@@ -110,7 +144,9 @@ class DaikinComfortControlAPI:
                             except DaikinAuthError:
                                 await self.authenticate()
                         return await self._request(
-                            method, path, json=json, authenticated=True, _retry_auth=False
+                            method, path,
+                            data=data, json=json, params=params,
+                            authenticated=True, _retry_auth=False,
                         )
                     if resp.status == 401:
                         raise DaikinAuthError("Authentication failed (401)")
