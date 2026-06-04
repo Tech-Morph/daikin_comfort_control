@@ -1,4 +1,4 @@
-"""Switch platform for Daikin Comfort Control - Vacation Mode."""
+"""Switch platform for Daikin Comfort Control — Vacation Mode."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import DaikinCoordinator
+from .coordinator import DaikinCoordinator, DaikinDeviceData
+from .exceptions import DaikinApiError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,7 +23,6 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Daikin switch entities from a config entry."""
     coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         DaikinVacationSwitch(coordinator) for coordinator in coordinators
@@ -30,13 +30,10 @@ async def async_setup_entry(
 
 
 class DaikinVacationSwitch(CoordinatorEntity[DaikinCoordinator], SwitchEntity):
-    """Switch that maps to Daikin vacation / holiday mode (en_hol).
+    """Toggle Daikin vacation / holiday mode (en_hol).
 
-    When ON  -> GET /common/set_holiday?port=<port>&en_hol=1
-    When OFF -> GET /common/set_holiday?port=<port>&en_hol=0
-
-    Device identifier uses device.uid to match climate.py and sensor.py
-    so all entities appear under the same device card.
+    Uses device.device_id as the device identifier — same as climate.py
+    and sensor.py — so all entities appear under one device card.
     """
 
     _attr_has_entity_name = True
@@ -45,43 +42,43 @@ class DaikinVacationSwitch(CoordinatorEntity[DaikinCoordinator], SwitchEntity):
 
     def __init__(self, coordinator: DaikinCoordinator) -> None:
         super().__init__(coordinator)
-        device = coordinator.device
-        # unique_id uses uid+port to match the pattern of other entities
-        self._attr_unique_id = f"{DOMAIN}_{device.uid}_{device.port}_vacation"
-        # identifiers MUST match climate.py and sensor.py exactly
+        self._attr_unique_id = f"{DOMAIN}_{coordinator.device_id}_vacation"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.uid)},
-            name=device.name,
+            identifiers={(DOMAIN, coordinator.device_id)},
+            name=coordinator.device_name,
             manufacturer="Daikin",
             model="BRP069C4x",
-            sw_version=device.fw_ver.replace("_", "."),
         )
 
     @property
+    def _d(self) -> DaikinDeviceData:
+        return self.coordinator.data
+
+    @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
+        if self._d is None:
             return None
-        return self.coordinator.data.state.vacation
+        return self._d.vacation
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         try:
-            await self.coordinator.client.set_vacation(
-                self.coordinator.device, enable=True
+            await self.coordinator.api.set_device_parameters(
+                self.coordinator.device_id, {"en_hol": "1"}
             )
-        except Exception as err:  # noqa: BLE001
+            self.coordinator.set_optimistic_vacation(True)
+        except DaikinApiError as err:
             _LOGGER.error("Failed to enable vacation mode: %s", err)
-            return
-        self.coordinator.set_optimistic_vacation(enable=True)
+            await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         try:
-            await self.coordinator.client.set_vacation(
-                self.coordinator.device, enable=False
+            await self.coordinator.api.set_device_parameters(
+                self.coordinator.device_id, {"en_hol": "0"}
             )
-        except Exception as err:  # noqa: BLE001
+            self.coordinator.set_optimistic_vacation(False)
+        except DaikinApiError as err:
             _LOGGER.error("Failed to disable vacation mode: %s", err)
-            return
-        self.coordinator.set_optimistic_vacation(enable=False)
+            await self.coordinator.async_request_refresh()
 
     @callback
     def _handle_coordinator_update(self) -> None:

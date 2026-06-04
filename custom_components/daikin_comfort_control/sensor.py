@@ -1,15 +1,13 @@
 """Sensor platform for Daikin Comfort Control.
 
-Provides the following sensors per device, all grouped under the same
-device card in HA so they appear automatically on integration setup:
-
-  - Outdoor Temperature       (deg C native, HA converts to user unit)
-  - Indoor Temperature        (deg C native, HA converts to user unit)
-  - Indoor Humidity           (%)
-  - Fan Speed                 (string: auto / quiet / low / ...)
-  - Fan Direction             (string: stopped / swing / position_N)
-  - Compressor Frequency      (Hz, integer)
-  - Compressor Power          (W relative, integer)
+Sensors per device (all grouped under the same device card):
+  - Indoor Temperature    (deg C native -> HA converts to user unit)
+  - Outdoor Temperature   (deg C native -> HA converts to user unit)
+  - Indoor Humidity       (%)
+  - Fan Speed             (string)
+  - Fan Direction         (string)
+  - Compressor Frequency  (Hz)
+  - Compressor Power      (W)
 """
 from __future__ import annotations
 
@@ -28,11 +26,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, DAIKIN_TO_HA_FAN
-from .coordinator import DaikinCoordinator
+from .coordinator import DaikinCoordinator, DaikinDeviceData
 
 _LOGGER = logging.getLogger(__name__)
 
-# f_dir_ud raw value -> friendly label
 FAN_DIR_UD_MAP: dict[str, str] = {
     "0": "stopped",
     "1": "position_1",
@@ -49,13 +46,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create all sensors for every discovered device."""
     coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]
     entities: list[SensorEntity] = []
     for coordinator in coordinators:
         entities += [
-            DaikinOutdoorTempSensor(coordinator),
             DaikinIndoorTempSensor(coordinator),
+            DaikinOutdoorTempSensor(coordinator),
             DaikinIndoorHumiditySensor(coordinator),
             DaikinFanSpeedSensor(coordinator),
             DaikinFanDirectionSensor(coordinator),
@@ -65,54 +61,24 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-# ---------------------------------------------------------------------------
-# Shared base
-# ---------------------------------------------------------------------------
-
 class _DaikinBaseSensor(CoordinatorEntity[DaikinCoordinator], SensorEntity):
-    """Shared base: attaches to the same DeviceInfo as the climate entity."""
+    """Shared base — attaches to the same DeviceInfo as the climate entity."""
 
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: DaikinCoordinator, key: str) -> None:
         super().__init__(coordinator)
-        device = coordinator.device
-        self._attr_unique_id = f"{DOMAIN}_{device.uid}_{device.port}_{key}"
+        self._attr_unique_id = f"{DOMAIN}_{coordinator.device_id}_{key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.uid)},
-            name=device.name,
+            identifiers={(DOMAIN, coordinator.device_id)},
+            name=coordinator.device_name,
             manufacturer="Daikin",
             model="BRP069C4x",
-            sw_version=device.fw_ver.replace("_", "."),
         )
 
     @property
-    def _state(self):
-        return self.coordinator.data.state
-
-    @property
-    def _raw(self) -> dict[str, str]:
-        return self.coordinator.data.raw_control
-
-
-# ---------------------------------------------------------------------------
-# Temperature sensors
-# ---------------------------------------------------------------------------
-
-class DaikinOutdoorTempSensor(_DaikinBaseSensor):
-    _attr_name                       = "Outdoor Temperature"
-    _attr_device_class               = SensorDeviceClass.TEMPERATURE
-    _attr_state_class                = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_icon                       = "mdi:thermometer"
-
-    def __init__(self, coordinator: DaikinCoordinator) -> None:
-        super().__init__(coordinator, "outdoor_temp")
-
-    @property
-    def native_value(self) -> float | None:
-        v = self._state.outdoor_temp
-        return v if v != 0.0 else None
+    def _d(self) -> DaikinDeviceData:
+        return self.coordinator.data
 
 
 class DaikinIndoorTempSensor(_DaikinBaseSensor):
@@ -127,13 +93,25 @@ class DaikinIndoorTempSensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        v = self._state.indoor_temp
+        v = self._d.indoor_temp
         return v if v != 0.0 else None
 
 
-# ---------------------------------------------------------------------------
-# Humidity sensor
-# ---------------------------------------------------------------------------
+class DaikinOutdoorTempSensor(_DaikinBaseSensor):
+    _attr_name                       = "Outdoor Temperature"
+    _attr_device_class               = SensorDeviceClass.TEMPERATURE
+    _attr_state_class                = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_icon                       = "mdi:thermometer"
+
+    def __init__(self, coordinator: DaikinCoordinator) -> None:
+        super().__init__(coordinator, "outdoor_temp")
+
+    @property
+    def native_value(self) -> float | None:
+        v = self._d.outdoor_temp
+        return v if v != 0.0 else None
+
 
 class DaikinIndoorHumiditySensor(_DaikinBaseSensor):
     _attr_name                       = "Indoor Humidity"
@@ -147,13 +125,9 @@ class DaikinIndoorHumiditySensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> int | None:
-        h = self._state.indoor_humidity
+        h = self._d.indoor_humidity
         return h if h > 0 else None
 
-
-# ---------------------------------------------------------------------------
-# Fan sensors
-# ---------------------------------------------------------------------------
 
 class DaikinFanSpeedSensor(_DaikinBaseSensor):
     _attr_name = "Fan Speed"
@@ -164,10 +138,7 @@ class DaikinFanSpeedSensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> str | None:
-        raw_frate = self._raw.get("f_rate")
-        if raw_frate is None:
-            return None
-        return DAIKIN_TO_HA_FAN.get(raw_frate, raw_frate)
+        return DAIKIN_TO_HA_FAN.get(self._d.fan_rate, self._d.fan_rate)
 
 
 class DaikinFanDirectionSensor(_DaikinBaseSensor):
@@ -179,15 +150,8 @@ class DaikinFanDirectionSensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> str | None:
-        raw = self._raw.get("f_dir_ud")
-        if raw is None:
-            return None
-        return FAN_DIR_UD_MAP.get(raw, f"position_{raw}")
+        return FAN_DIR_UD_MAP.get(self._d.f_dir_ud, f"position_{self._d.f_dir_ud}")
 
-
-# ---------------------------------------------------------------------------
-# Compressor sensors
-# ---------------------------------------------------------------------------
 
 class DaikinCompressorFreqSensor(_DaikinBaseSensor):
     _attr_name                       = "Compressor Frequency"
@@ -201,7 +165,7 @@ class DaikinCompressorFreqSensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> int | None:
-        v = self._state.cmpfreq
+        v = self._d.cmpfreq
         return v if v > 0 else None
 
 
@@ -217,5 +181,5 @@ class DaikinCompressorPowerSensor(_DaikinBaseSensor):
 
     @property
     def native_value(self) -> int | None:
-        v = self._state.mompow
+        v = self._d.mompow
         return v if v > 0 else None

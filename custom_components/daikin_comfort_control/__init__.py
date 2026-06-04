@@ -15,7 +15,8 @@ from .daikin_api import DaikinComfortControlAPI
 from .exceptions import DaikinApiError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.CLIMATE]
+
+PLATFORMS = [Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH]
 
 # Legacy key names that older versions may have stored under.
 _LEGACY_USERNAME_KEYS = ("email", "email_address", "user", "login")
@@ -30,24 +31,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     new_data = dict(entry.data)
     changed = False
 
-    # Remap legacy username keys (including 'email' from the previous integration version)
     if CONF_USERNAME not in new_data:
         for old_key in _LEGACY_USERNAME_KEYS:
             if old_key in new_data:
-                _LOGGER.warning(
-                    "Migrating config entry: renaming key '%s' -> 'username'", old_key
-                )
+                _LOGGER.warning("Migrating config entry: renaming key '%s' -> 'username'", old_key)
                 new_data[CONF_USERNAME] = new_data.pop(old_key)
                 changed = True
                 break
 
-    # Remap legacy password keys
     if CONF_PASSWORD not in new_data:
         for old_key in _LEGACY_PASSWORD_KEYS:
             if old_key in new_data:
-                _LOGGER.warning(
-                    "Migrating config entry: renaming key '%s' -> 'password'", old_key
-                )
+                _LOGGER.warning("Migrating config entry: renaming key '%s' -> 'password'", old_key)
                 new_data[CONF_PASSWORD] = new_data.pop(old_key)
                 changed = True
                 break
@@ -93,15 +88,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinators: list[DaikinCoordinator] = []
     for device in devices:
         device_id = device.get("id") or device.get("deviceId")
+        device_name = device.get("name") or device.get("deviceName") or device_id
         if not device_id:
             _LOGGER.warning("Device entry missing id field, skipping: %s", device)
             continue
-        coord = DaikinCoordinator(hass, api, entry, device_id)
+        coord = DaikinCoordinator(hass, api, entry, device_id, device_name)
         await coord.async_config_entry_first_refresh()
         coordinators.append(coord)
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"api": api, "coordinators": coordinators}
+    # Store as a plain flat list — all platform files iterate this directly.
+    hass.data[DOMAIN][entry.entry_id] = coordinators
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
