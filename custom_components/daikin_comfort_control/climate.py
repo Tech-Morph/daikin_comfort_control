@@ -55,7 +55,6 @@ HVAC_MODES = [
     HVACMode.FAN_ONLY,
 ]
 
-# Daikin mode integer <-> HA HVACMode
 DAIKIN_INT_TO_HVAC: dict[int, HVACMode] = {
     DAIKIN_MODE_AUTO: HVACMode.AUTO,
     DAIKIN_MODE_COOL: HVACMode.COOL,
@@ -65,7 +64,6 @@ DAIKIN_INT_TO_HVAC: dict[int, HVACMode] = {
 }
 HVAC_TO_DAIKIN_INT: dict[HVACMode, int] = {v: k for k, v in DAIKIN_INT_TO_HVAC.items()}
 
-# Swing string <-> (f_dir_ud, f_dir_lr)
 _SWING_TO_DIRS: dict[str, tuple[str, str]] = {
     SWING_OFF:        ("0", "0"),
     SWING_VERTICAL:   ("S", "0"),
@@ -81,7 +79,7 @@ def _c_to_f(celsius: float) -> float:
 
 def _f_to_c(fahrenheit: float) -> float:
     raw = (fahrenheit - 32) * 5 / 9
-    return round(raw * 2) / 2   # round to nearest 0.5 C
+    return round(raw * 2) / 2
 
 
 async def async_setup_entry(
@@ -98,9 +96,10 @@ async def async_setup_entry(
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     """Climate entity for a single Daikin mini-split.
 
-    - Temperature reported/accepted in FAHRENHEIT (native), 1 F step.
-    - Internal API calls always use Celsius (0.5 C precision).
-    - Swing: off / vertical / horizontal / both.
+    Temperature reported/accepted in FAHRENHEIT (native), 1 F step.
+    Internal API calls always use Celsius (0.5 C precision).
+    set_control_info requires the FULL state on every call — partial
+    params cause the unit to revert omitted fields to defaults.
     """
 
     _attr_temperature_unit        = UnitOfTemperature.FAHRENHEIT
@@ -132,8 +131,34 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def _d(self) -> DaikinDeviceData:
-        """Shortcut to current coordinator data."""
         return self.coordinator.data
+
+    def _full_params(self, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Build a complete set_control_info payload from current state.
+
+        Daikin requires all fields on every call. We snapshot the current
+        coordinator data and let the caller override specific fields.
+        dt3 always mirrors stemp (required for mode=3/cool).
+        """
+        d = self._d
+        stemp = str(d.target_temp)
+        params: dict[str, Any] = {
+            "pow":      "1" if d.power else "0",
+            "mode":     str(d.mode),
+            "stemp":    stemp,
+            "dt3":      stemp,
+            "f_rate":   d.fan_rate,
+            "shum":     "0",
+            "f_dir_ud": d.f_dir_ud,
+            "f_dir_lr": d.f_dir_lr,
+            "dh3":      "0",
+        }
+        if overrides:
+            params.update(overrides)
+            # Keep dt3 in sync if stemp was overridden
+            if "stemp" in overrides and "dt3" not in overrides:
+                params["dt3"] = overrides["stemp"]
+        return params
 
     # ------------------------------------------------------------------
     # State properties
@@ -177,21 +202,22 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         return attrs
 
     # ------------------------------------------------------------------
-    # Service handlers
+    # Service handlers — each sends full state + its override
     # ------------------------------------------------------------------
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         try:
             if hvac_mode == HVACMode.OFF:
+                params = self._full_params({"pow": "0"})
                 await self.coordinator.api.set_device_parameters(
-                    self.coordinator.device_id, {"pow": "0"}
+                    self.coordinator.device_id, params
                 )
                 self.coordinator.set_optimistic_power(False)
             else:
                 daikin_mode = HVAC_TO_DAIKIN_INT.get(hvac_mode, DAIKIN_MODE_COOL)
+                params = self._full_params({"pow": "1", "mode": str(daikin_mode)})
                 await self.coordinator.api.set_device_parameters(
-                    self.coordinator.device_id,
-                    {"pow": "1", "mode": str(daikin_mode)},
+                    self.coordinator.device_id, params
                 )
                 self.coordinator.set_optimistic_power(True)
                 self.coordinator.set_optimistic_mode(daikin_mode)
@@ -204,10 +230,11 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         if temp_f is None:
             return
         temp_c = _f_to_c(float(temp_f))
+        stemp = str(temp_c)
         try:
+            params = self._full_params({"stemp": stemp, "dt3": stemp})
             await self.coordinator.api.set_device_parameters(
-                self.coordinator.device_id,
-                {"stemp": str(temp_c), "dt3": str(temp_c)},
+                self.coordinator.device_id, params
             )
             self.coordinator.set_optimistic_target_temp(temp_c)
         except DaikinApiError as err:
@@ -217,8 +244,9 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         daikin_fan = HA_TO_DAIKIN_FAN.get(fan_mode, "A")
         try:
+            params = self._full_params({"f_rate": daikin_fan})
             await self.coordinator.api.set_device_parameters(
-                self.coordinator.device_id, {"f_rate": daikin_fan}
+                self.coordinator.device_id, params
             )
             self.coordinator.set_optimistic_fan_rate(daikin_fan)
         except DaikinApiError as err:
@@ -228,9 +256,9 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
     async def async_set_swing_mode(self, swing_mode: str) -> None:
         ud, lr = _SWING_TO_DIRS.get(swing_mode, ("0", "0"))
         try:
+            params = self._full_params({"f_dir_ud": ud, "f_dir_lr": lr})
             await self.coordinator.api.set_device_parameters(
-                self.coordinator.device_id,
-                {"f_dir_ud": ud, "f_dir_lr": lr},
+                self.coordinator.device_id, params
             )
             self.coordinator.set_optimistic_swing(ud, lr)
         except DaikinApiError as err:
