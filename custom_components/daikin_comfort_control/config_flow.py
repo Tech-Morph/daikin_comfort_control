@@ -10,7 +10,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
-from .const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
+from .const import CONF_USERNAME, CONF_PASSWORD, DOMAIN
 from .daikin_api import DaikinComfortControlAPI
 from .exceptions import DaikinApiError, DaikinAuthError
 
@@ -18,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_EMAIL): str,
+        vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
     }
 )
@@ -37,7 +37,7 @@ class DaikinComfortControlConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             session = async_create_clientsession(self.hass)
             api = DaikinComfortControlAPI(
-                email=user_input[CONF_EMAIL],
+                username=user_input[CONF_USERNAME],
                 password=user_input[CONF_PASSWORD],
                 session=session,
             )
@@ -51,10 +51,10 @@ class DaikinComfortControlConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error during Daikin auth")
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
+                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=user_input[CONF_EMAIL],
+                    title=user_input[CONF_USERNAME],
                     data=user_input,
                 )
 

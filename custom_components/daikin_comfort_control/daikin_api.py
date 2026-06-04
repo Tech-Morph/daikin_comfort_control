@@ -25,8 +25,8 @@ REQUEST_TIMEOUT = 15
 class DaikinComfortControlAPI:
     """Thin async client for the Daikin Skyport cloud API."""
 
-    def __init__(self, email: str, password: str, session: aiohttp.ClientSession) -> None:
-        self._email = email
+    def __init__(self, username: str, password: str, session: aiohttp.ClientSession) -> None:
+        self._username = username
         self._password = password
         self._session = session
         self._access_token: str | None = None
@@ -36,8 +36,8 @@ class DaikinComfortControlAPI:
     # ------------------------------------------------------------------ auth
 
     async def authenticate(self) -> None:
-        """Login with email/password and store tokens."""
-        payload = {"email": self._email, "password": self._password}
+        """Login with username/password and store tokens."""
+        payload = {"username": self._username, "password": self._password}
         data = await self._request("POST", ENDPOINT_AUTH, json=payload, authenticated=False)
         self._access_token = data.get("accessToken") or data.get("access_token")
         self._refresh_token = data.get("refreshToken") or data.get("refresh_token")

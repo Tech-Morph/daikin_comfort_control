@@ -9,7 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
+from .const import CONF_USERNAME, CONF_PASSWORD, DOMAIN
 from .coordinator import DaikinCoordinator
 from .daikin_api import DaikinComfortControlAPI
 from .exceptions import DaikinApiError, DaikinAuthError
@@ -17,33 +17,27 @@ from .exceptions import DaikinApiError, DaikinAuthError
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.CLIMATE]
 
-# Keys that older versions of this integration may have stored credentials under.
-# Maps old_key -> new_key. Order matters: first match wins.
-_LEGACY_EMAIL_KEYS = ("username", "user", "email_address", "login")
+# Legacy key names that older versions may have stored under.
+_LEGACY_USERNAME_KEYS = ("email", "email_address", "user", "login")
 _LEGACY_PASSWORD_KEYS = ("pass", "passwd", "pwd", "secret")
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate config entry data from legacy key names to current schema.
-
-    This runs automatically when the stored entry version is older than
-    the current ConfigFlow VERSION. It also safely remaps any legacy
-    credential key names regardless of version.
-    """
+    """Migrate config entry data from legacy key names to current schema."""
     _LOGGER.debug(
-        "Migrating Daikin Comfort Control entry from version %s", entry.version
+        "Checking Daikin Comfort Control entry for migration (version %s)", entry.version
     )
     new_data = dict(entry.data)
     changed = False
 
-    # Remap legacy email keys
-    if CONF_EMAIL not in new_data:
-        for old_key in _LEGACY_EMAIL_KEYS:
+    # Remap legacy username keys (including 'email' from the previous integration version)
+    if CONF_USERNAME not in new_data:
+        for old_key in _LEGACY_USERNAME_KEYS:
             if old_key in new_data:
                 _LOGGER.warning(
-                    "Migrating config entry: renaming '%s' -> 'email'", old_key
+                    "Migrating config entry: renaming key '%s' -> 'username'", old_key
                 )
-                new_data[CONF_EMAIL] = new_data.pop(old_key)
+                new_data[CONF_USERNAME] = new_data.pop(old_key)
                 changed = True
                 break
 
@@ -52,7 +46,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for old_key in _LEGACY_PASSWORD_KEYS:
             if old_key in new_data:
                 _LOGGER.warning(
-                    "Migrating config entry: renaming '%s' -> 'password'", old_key
+                    "Migrating config entry: renaming key '%s' -> 'password'", old_key
                 )
                 new_data[CONF_PASSWORD] = new_data.pop(old_key)
                 changed = True
@@ -67,13 +61,12 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daikin Comfort Control from a config entry."""
-
-    email = entry.data.get(CONF_EMAIL)
+    username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
 
-    if not email or not password:
+    if not username or not password:
         _LOGGER.error(
-            "Daikin Comfort Control config entry is missing 'email' or 'password'. "
+            "Daikin Comfort Control config entry is missing 'username' or 'password'. "
             "Delete and re-add the integration to fix this. "
             "Entry data keys present: %s",
             list(entry.data.keys()),
@@ -82,7 +75,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     session = async_get_clientsession(hass)
     api = DaikinComfortControlAPI(
-        email=email,
+        username=username,
         password=password,
         session=session,
     )

@@ -5,13 +5,13 @@
         "title": "Daikin Comfort Control",
         "description": "Enter your Daikin Comfort Control account credentials.",
         "data": {
-          "email": "Email address",
+          "username": "Username",
           "password": "Password"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password.",
+      "invalid_auth": "Invalid username or password.",
       "cannot_connect": "Unable to connect to Daikin cloud.",
       "unknown": "Unexpected error — check the HA logs."
     },
