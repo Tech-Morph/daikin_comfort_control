@@ -18,53 +18,17 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH]
 
-_LEGACY_USERNAME_KEYS = ("email", "email_address", "user", "login")
-_LEGACY_PASSWORD_KEYS = ("pass", "passwd", "pwd", "secret")
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    new_data = dict(entry.data)
-    changed = False
-
-    if CONF_USERNAME not in new_data:
-        for old_key in _LEGACY_USERNAME_KEYS:
-            if old_key in new_data:
-                new_data[CONF_USERNAME] = new_data.pop(old_key)
-                changed = True
-                break
-
-    if CONF_PASSWORD not in new_data:
-        for old_key in _LEGACY_PASSWORD_KEYS:
-            if old_key in new_data:
-                new_data[CONF_PASSWORD] = new_data.pop(old_key)
-                changed = True
-                break
-
-    if changed:
-        hass.config_entries.async_update_entry(entry, data=new_data, version=1)
-        _LOGGER.info("Daikin Comfort Control config entry migrated")
-
-    return True
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daikin Comfort Control from a config entry."""
-    username = entry.data.get(CONF_USERNAME)
-    password = entry.data.get(CONF_PASSWORD)
+    username = entry.data.get(CONF_USERNAME, "")
+    password = entry.data.get(CONF_PASSWORD, "")
     uid      = entry.data.get(CONF_UID, "")
 
-    if not username or not password:
+    if not username or not password or not uid:
         _LOGGER.error(
-            "Config entry missing 'username' or 'password'. "
-            "Delete and re-add the integration. Keys present: %s",
+            "Config entry missing required fields. Keys present: %s",
             list(entry.data.keys()),
-        )
-        return False
-
-    if not uid:
-        _LOGGER.error(
-            "Config entry missing 'uid' (x-daikin-uid). "
-            "Delete and re-add the integration."
         )
         return False
 
@@ -78,23 +42,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await api.authenticate()
-        devices = await api.get_devices()
     except DaikinAuthError as err:
         _LOGGER.error("Authentication failed: %s", err)
         return False
     except DaikinApiError as err:
-        _LOGGER.error("Failed to fetch devices on setup: %s", err)
+        _LOGGER.error("Cannot connect to Daikin cloud: %s", err)
         return False
+
+    # Attempt device discovery but log whatever comes back for schema analysis.
+    # If discovery returns nothing we fall back to a single synthesised device
+    # built from the credentials we already know work (confirmed via mitmproxy:
+    # get_control_info uses port=30050 and id=<username>).
+    try:
+        raw_devices = await api.get_devices()
+        _LOGGER.debug("get_devices returned %d item(s): %s", len(raw_devices), raw_devices)
+    except DaikinApiError as err:
+        _LOGGER.warning("get_devices failed (%s) — falling back to synthesised device", err)
+        raw_devices = []
+
+    if raw_devices:
+        devices = raw_devices
+    else:
+        # Fallback: synthesise one device from the username we authenticated with.
+        # device_id is used as the 'id' param in get/set_control_info.
+        _LOGGER.warning(
+            "get_devices returned no devices — using synthesised device for '%s'. "
+            "Enable debug logging and paste the get_devices log line to fix discovery.",
+            username,
+        )
+        devices = [{"id": username, "name": f"Daikin ({username})"}]
 
     coordinators: list[DaikinCoordinator] = []
     for device in devices:
-        device_id   = device.get("id") or device.get("deviceId")
+        device_id   = device.get("id") or device.get("deviceId") or username
         device_name = device.get("name") or device.get("deviceName") or device_id
-        if not device_id:
-            _LOGGER.warning("Device entry missing id field, skipping: %s", device)
-            continue
         coord = DaikinCoordinator(hass, api, entry, device_id, device_name)
-        await coord.async_config_entry_first_refresh()
+        try:
+            await coord.async_config_entry_first_refresh()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("First refresh failed for %s: %s", device_id, err)
         coordinators.append(coord)
 
     hass.data.setdefault(DOMAIN, {})
