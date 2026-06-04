@@ -78,13 +78,20 @@ class DaikinComfortControlAPI:
             "POST", ENDPOINT_AUTH, data=payload, authenticated=False
         )
 
+        # Response may be JSON dict or plain-text key=value
+        if isinstance(data, str):
+            parsed = _parse_kv(data)
+        else:
+            parsed = data
+
         self._access_token = (
-            data.get("accessToken") or data.get("access_token")
+            parsed.get("accessToken") or parsed.get("access_token")
         )
         self._refresh_token = (
-            data.get("refreshToken") or data.get("refresh_token")
+            parsed.get("refreshToken") or parsed.get("refresh_token")
         )
         if not self._access_token:
+            _LOGGER.error("Login raw response (no token found): %s", data)
             raise DaikinAuthError("No access token in login response")
         _LOGGER.debug("Daikin auth successful")
 
@@ -97,6 +104,8 @@ class DaikinComfortControlAPI:
             data = await self._request(
                 "POST", ENDPOINT_AUTH_REFRESH, data=payload, authenticated=False
             )
+            if isinstance(data, str):
+                data = _parse_kv(data)
             self._access_token = (
                 data.get("accessToken") or data.get("access_token")
             )
@@ -109,19 +118,35 @@ class DaikinComfortControlAPI:
     # --------------------------------------------------------------- devices
 
     async def get_devices(self) -> list[dict[str, Any]]:
-        """Return list of all registered devices."""
+        """Return list of all registered devices.
+
+        Logs the raw response at DEBUG level so we can discover the exact schema.
+        Enable debug logging for daikin_comfort_control to see it.
+        """
         result = await self._request("GET", ENDPOINT_DEVICES)
-        # Response may be a list directly or wrapped in a key
+        _LOGGER.debug(
+            "get_devices raw response | type=%s | value=%s",
+            type(result).__name__, result
+        )
+
         if isinstance(result, list):
             return result
-        return result.get("devices", result.get("deviceList", []))
+        if isinstance(result, dict):
+            return result.get("devices", result.get("deviceList", [result]))
+        # Plain-text or unexpected type — log it, return empty so setup proceeds
+        _LOGGER.warning(
+            "get_devices: unexpected response type %s: %s — "
+            "paste this into the project issue tracker to map the schema",
+            type(result).__name__, result
+        )
+        return []
 
     async def get_device(self, device_id: str) -> dict[str, Any]:
         """Return current control state for a device.
 
         Confirmed params: port=30050, id=<username>, apw='', spw=''
         """
-        return await self._request(
+        result = await self._request(
             "GET",
             ENDPOINT_GET_CONTROL,
             params={
@@ -131,6 +156,12 @@ class DaikinComfortControlAPI:
                 "spw":  "",
             },
         )
+        _LOGGER.debug("get_device raw response: %s", result)
+        if isinstance(result, str):
+            return _parse_kv(result)
+        if isinstance(result, dict):
+            return result
+        return {}
 
     async def set_device_parameters(
         self, device_id: str, params: dict[str, Any]
@@ -164,10 +195,10 @@ class DaikinComfortControlAPI:
     ) -> Any:
         url = BASE_URL + path
 
-        # x-daikin-uid and user-agent are sent on EVERY request (incl. login)
+        # x-daikin-uid and user-agent sent on EVERY request including login
         headers: dict[str, str] = {
-            "x-daikin-uid": self._uid,
-            "user-agent":   _USER_AGENT,
+            "x-daikin-uid":    self._uid,
+            "user-agent":      _USER_AGENT,
             "accept-encoding": "gzip",
         }
 
@@ -205,9 +236,25 @@ class DaikinComfortControlAPI:
                         )
                     if resp.content_type and "json" in resp.content_type:
                         return await resp.json()
-                    # Plain-text response (e.g. ret=OK,... from control endpoints)
+                    # Plain-text response (e.g. ret=OK,pow=1,... from control endpoints)
                     return await resp.text()
         except asyncio.TimeoutError as err:
             raise DaikinApiError(f"Request timed out: {method} {path}") from err
         except aiohttp.ClientError as err:
             raise DaikinApiError(f"Network error: {err}") from err
+
+
+# ------------------------------------------------------------------ helpers
+
+def _parse_kv(text: str) -> dict[str, str]:
+    """Parse Daikin-style key=value,key=value plain-text responses.
+
+    Example: 'ret=OK,pow=1,mode=3,stemp=20.5,f_rate=A'
+    """
+    result: dict[str, str] = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            k, _, v = pair.partition("=")
+            result[k.strip()] = v.strip()
+    return result
