@@ -3,21 +3,20 @@
     "step": {
       "user": {
         "title": "Daikin Comfort Control",
-        "description": "Enter your Daikin Comfort Control account credentials. The Device UID (x-daikin-uid) can be found by capturing your app traffic with a proxy tool.",
+        "description": "Enter your Daikin Comfort Control app login credentials.",
         "data": {
-          "username": "Username",
-          "password": "Password",
-          "uid": "Device UID (x-daikin-uid)"
+          "username": "Email / Username",
+          "password": "Password"
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid username or password.",
-      "cannot_connect": "Unable to connect to Daikin cloud.",
-      "unknown": "Unexpected error — check the HA logs."
+      "cannot_connect": "Cannot connect to Daikin cloud. Check your network.",
+      "unknown": "Unexpected error. Check the HA logs."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This Daikin account is already configured."
     }
   }
 }
