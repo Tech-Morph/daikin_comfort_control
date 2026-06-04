@@ -10,7 +10,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
-from .const import CONF_USERNAME, CONF_PASSWORD, DOMAIN
+from .const import CONF_USERNAME, CONF_PASSWORD, CONF_UID, DOMAIN
 from .daikin_api import DaikinComfortControlAPI
 from .exceptions import DaikinApiError, DaikinAuthError
 
@@ -20,6 +20,7 @@ STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_UID):      str,
     }
 )
 
@@ -39,6 +40,7 @@ class DaikinComfortControlConfigFlow(ConfigFlow, domain=DOMAIN):
             api = DaikinComfortControlAPI(
                 username=user_input[CONF_USERNAME],
                 password=user_input[CONF_PASSWORD],
+                uid=user_input[CONF_UID],
                 session=session,
             )
             try:

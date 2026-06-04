@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Daikin Comfort Control",
-        "description": "Enter your Daikin Comfort Control account credentials.",
+        "description": "Enter your Daikin Comfort Control account credentials. The Device UID (x-daikin-uid) can be found by capturing your app traffic with a proxy tool.",
         "data": {
           "username": "Username",
-          "password": "Password"
+          "password": "Password",
+          "uid": "Device UID (x-daikin-uid)"
         }
       }
     },
