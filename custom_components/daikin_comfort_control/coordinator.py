@@ -1,151 +1,48 @@
 """DataUpdateCoordinator for Daikin Comfort Control."""
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
 from datetime import timedelta
-from time import monotonic
+from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import HA_TO_DAIKIN_FAN, HA_TO_DAIKIN_MODE, HA_TO_DAIKIN_SWING
-from .daikin_api import DaikinCloudClient, DaikinDevice, DaikinState, DaikinAPIError, DaikinAuthError
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .daikin_api import DaikinComfortControlAPI
+from .exceptions import DaikinApiError, DaikinAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
-WRITE_SETTLE_SECONDS = 20
-WRITE_CONFIRM_DELAY  = 15
 
-
-@dataclass
-class DaikinData:
-    """Combined state + raw control_info + raw holiday for a single device poll cycle."""
-    state: DaikinState
-    raw_control: dict[str, str]
-    raw_holiday: dict[str, str]
-
-
-class DaikinCoordinator(DataUpdateCoordinator[DaikinData]):
-    """Polls a single Daikin device and exposes its state."""
+class DaikinCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Fetch and cache Daikin device state."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        client: DaikinCloudClient,
-        device: DaikinDevice,
-        scan_interval: int,
+        api: DaikinComfortControlAPI,
+        entry: ConfigEntry,
+        device_id: str,
     ) -> None:
-        self.client = client
-        self.device = device
-        self._last_write_time: float = 0.0
+        scan_interval = entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL)
         super().__init__(
             hass,
             _LOGGER,
-            name=f"Daikin {device.name}",
+            name=f"{DOMAIN}_{device_id}",
             update_interval=timedelta(seconds=scan_interval),
         )
+        self.api = api
+        self.device_id = device_id
 
-    async def _async_update_data(self) -> DaikinData:
-        if (monotonic() - self._last_write_time) < WRITE_SETTLE_SECONDS:
-            _LOGGER.debug("Skipping poll for %s — within write-settle window", self.device.name)
-            if self.data is not None:
-                return self.data
-
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch device state — called by coordinator on every poll cycle."""
         try:
-            state, raw_control, raw_holiday = await self.client.get_state_with_raw(self.device)
-            return DaikinData(state=state, raw_control=raw_control, raw_holiday=raw_holiday)
+            return await self.api.get_device(self.device_id)
         except DaikinAuthError as err:
-            raise UpdateFailed(f"Auth error: {err}") from err
-        except DaikinAPIError as err:
-            raise UpdateFailed(f"API error: {err}") from err
-        except Exception as err:
-            raise UpdateFailed(f"Unexpected error: {err}") from err
-
-    @callback
-    def set_optimistic_data(
-        self,
-        *,
-        power: bool | None = None,
-        mode: str | None = None,
-        target_temp: float | None = None,
-        fan_rate: str | None = None,
-        swing_mode: str | None = None,
-        raw_overrides: dict[str, str] | None = None,
-    ) -> None:
-        """Patch coordinator.data in-place immediately after a write command.
-
-        fan_rate  : HA label ("low", "auto", etc.) — converted to raw Daikin code
-        swing_mode: HA label ("off", "vertical", etc.) — stored directly in DaikinState
-        """
-        if self.data is None:
-            return
-
-        # Convert HA fan label -> raw Daikin code (must match _parse_kv format)
-        raw_fan_code: str | None = None
-        if fan_rate is not None:
-            raw_fan_code = HA_TO_DAIKIN_FAN.get(fan_rate, "A")
-
-        old_state = self.data.state
-        new_state = replace(
-            old_state,
-            power       = power       if power       is not None else old_state.power,
-            mode        = mode        if mode        is not None else old_state.mode,
-            target_temp = target_temp if target_temp is not None else old_state.target_temp,
-            fan_rate    = raw_fan_code if raw_fan_code is not None else old_state.fan_rate,
-            swing_mode  = swing_mode  if swing_mode  is not None else old_state.swing_mode,
-        )
-
-        new_raw = dict(self.data.raw_control)
-        if raw_overrides:
-            new_raw.update(raw_overrides)
-
-        if power is not None:
-            new_raw["pow"] = "1" if power else "0"
-        if mode is not None:
-            new_raw["mode"] = str(HA_TO_DAIKIN_MODE.get(mode, 3))
-        if target_temp is not None:
-            new_raw["stemp"] = f"{target_temp:.1f}"
-        if raw_fan_code is not None:
-            new_raw["f_rate"] = raw_fan_code
-        if swing_mode is not None:
-            dfd3, fdir_ud, fdir_lr = HA_TO_DAIKIN_SWING.get(swing_mode, ("0", "0", "0"))
-            new_raw["dfd3"]     = dfd3
-            new_raw["f_dir_ud"] = fdir_ud
-            new_raw["f_dir_lr"] = fdir_lr
-
-        self.async_set_updated_data(
-            DaikinData(
-                state=new_state,
-                raw_control=new_raw,
-                raw_holiday=dict(self.data.raw_holiday),
-            )
-        )
-        self._last_write_time = monotonic()
-        async_call_later(self.hass, WRITE_CONFIRM_DELAY, self._async_confirm_write)
-
-    @callback
-    def set_optimistic_vacation(self, *, enable: bool) -> None:
-        """Patch vacation state immediately after set_holiday write."""
-        if self.data is None:
-            return
-
-        new_state = replace(self.data.state, vacation=enable)
-        new_holiday = dict(self.data.raw_holiday)
-        new_holiday["en_hol"]      = "1" if enable else "0"
-        new_holiday["holiday_flg"] = "1" if enable else "0"
-
-        self.async_set_updated_data(
-            DaikinData(
-                state=new_state,
-                raw_control=dict(self.data.raw_control),
-                raw_holiday=new_holiday,
-            )
-        )
-        self._last_write_time = monotonic()
-        async_call_later(self.hass, WRITE_CONFIRM_DELAY, self._async_confirm_write)
-
-    async def _async_confirm_write(self, _now=None) -> None:
-        self._last_write_time = 0.0
-        await self.async_refresh()
+            raise ConfigEntryAuthFailed(f"Auth error polling device: {err}") from err
+        except DaikinApiError as err:
+            raise UpdateFailed(f"Error polling Daikin device {self.device_id}: {err}") from err

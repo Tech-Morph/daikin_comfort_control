@@ -1,14 +1,10 @@
 {
   "domain": "daikin_comfort_control",
   "name": "Daikin Comfort Control",
-  "version": "0.1.0",
+  "codeowners": ["@Tech-Morph"],
   "config_flow": true,
   "documentation": "https://github.com/Tech-Morph/daikin_comfort_control",
-  "issue_tracker": "https://github.com/Tech-Morph/daikin_comfort_control/issues",
-  "requirements": [],
-  "dependencies": [],
-  "codeowners": ["@Tech-Morph"],
   "iot_class": "cloud_polling",
-  "integration_type": "device",
-  "platforms": ["climate", "sensor", "switch"]
+  "requirements": [],
+  "version": "0.2.0"
 }

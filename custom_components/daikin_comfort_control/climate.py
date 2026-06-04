@@ -1,4 +1,5 @@
-"""Climate platform for Daikin Comfort Control."""
+"""Daikin Comfort Control climate entity — HA 2026.x compatible."""
+
 from __future__ import annotations
 
 import logging
@@ -8,58 +9,64 @@ from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
-    SWING_OFF,
-    SWING_VERTICAL,
-    SWING_HORIZONTAL,
-    SWING_BOTH,
 )
-from homeassistant.components.climate.const import FAN_AUTO, FAN_HIGH, FAN_LOW, FAN_MEDIUM
+from homeassistant.components.climate.const import (
+    FAN_AUTO,
+    FAN_HIGH,
+    FAN_LOW,
+    FAN_MEDIUM,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, DAIKIN_TO_HA_FAN, HA_TO_DAIKIN_FAN
+from .const import (
+    DAIKIN_FAN_AUTO,
+    DAIKIN_FAN_HIGH,
+    DAIKIN_FAN_LOW,
+    DAIKIN_FAN_MEDIUM,
+    DAIKIN_FAN_POWERFUL,
+    DAIKIN_FAN_QUIET,
+    DAIKIN_MODE_AUTO,
+    DAIKIN_MODE_COOL,
+    DAIKIN_MODE_DRY,
+    DAIKIN_MODE_FAN,
+    DAIKIN_MODE_HEAT,
+    DAIKIN_MODE_OFF,
+    DOMAIN,
+    MAX_TEMP,
+    MIN_TEMP,
+    TEMP_STEP,
+)
 from .coordinator import DaikinCoordinator
-from .daikin_api import DaikinAPIError
+from .exceptions import DaikinApiError
 
 _LOGGER = logging.getLogger(__name__)
 
-FAN_QUIET       = "quiet"
-FAN_MEDIUM_LOW  = "medium_low"
-FAN_MEDIUM_HIGH = "medium_high"
-
-FAN_MODES   = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
-SWING_MODES = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
-
-HVAC_MODES = [
-    HVACMode.OFF,
-    HVACMode.AUTO,
-    HVACMode.COOL,
-    HVACMode.HEAT,
-    HVACMode.DRY,
-    HVACMode.FAN_ONLY,
-]
-
-DAIKIN_TO_HVAC: dict[str, HVACMode] = {
-    "auto":     HVACMode.AUTO,
-    "cool":     HVACMode.COOL,
-    "heat":     HVACMode.HEAT,
-    "dry":      HVACMode.DRY,
-    "fan_only": HVACMode.FAN_ONLY,
+# Map Daikin integer mode <-> HA HVACMode
+_DAIKIN_TO_HA_MODE: dict[int, HVACMode] = {
+    DAIKIN_MODE_OFF: HVACMode.OFF,
+    DAIKIN_MODE_AUTO: HVACMode.AUTO,
+    DAIKIN_MODE_DRY: HVACMode.DRY,
+    DAIKIN_MODE_COOL: HVACMode.COOL,
+    DAIKIN_MODE_HEAT: HVACMode.HEAT,
+    DAIKIN_MODE_FAN: HVACMode.FAN_ONLY,
 }
-HVAC_TO_DAIKIN: dict[HVACMode, str] = {v: k for k, v in DAIKIN_TO_HVAC.items()}
+_HA_TO_DAIKIN_MODE: dict[HVACMode, int] = {v: k for k, v in _DAIKIN_TO_HA_MODE.items()}
 
-
-def _c_to_f(celsius: float) -> float:
-    return round(celsius * 9 / 5 + 32)
-
-
-def _f_to_c(fahrenheit: float) -> float:
-    raw = (fahrenheit - 32) * 5 / 9
-    return round(raw * 2) / 2
+# Map Daikin fan string <-> HA fan mode string
+_DAIKIN_TO_HA_FAN: dict[str, str] = {
+    DAIKIN_FAN_AUTO: FAN_AUTO,
+    DAIKIN_FAN_QUIET: "quiet",
+    DAIKIN_FAN_LOW: FAN_LOW,
+    DAIKIN_FAN_MEDIUM: FAN_MEDIUM,
+    DAIKIN_FAN_HIGH: FAN_HIGH,
+    DAIKIN_FAN_POWERFUL: "powerful",
+}
+_HA_TO_DAIKIN_FAN: dict[str, str] = {v: k for k, v in _DAIKIN_TO_HA_FAN.items()}
 
 
 async def async_setup_entry(
@@ -67,148 +74,134 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]
+    """Set up climate entities for all discovered Daikin devices."""
+    coordinators: list[DaikinCoordinator] = hass.data[DOMAIN][entry.entry_id]["coordinators"]
     async_add_entities(
         DaikinClimateEntity(coordinator) for coordinator in coordinators
     )
 
 
 class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
-    """Represents a single Daikin mini-split unit.
+    """Climate entity for a single Daikin mini-split."""
 
-    Temperature: FAHRENHEIT native, 64-90 F, 1 degree step.
-    Swing modes: off / vertical (tilt) / horizontal / both (3D).
-    """
-
-    _attr_temperature_unit        = UnitOfTemperature.FAHRENHEIT
-    _attr_target_temperature_step = 1.0
-    _attr_min_temp                = 64.0
-    _attr_max_temp                = 90.0
-    _attr_hvac_modes              = HVAC_MODES
-    _attr_fan_modes               = FAN_MODES
-    _attr_swing_modes             = SWING_MODES
-    _attr_supported_features      = (
+    # ----------------------------------------------------------------
+    # HA 2026.x FIX:
+    # 1. Declare ALL features explicitly — including TURN_ON and TURN_OFF.
+    #    The deprecation grace period has ended; HA no longer auto-sets these.
+    # 2. _enable_turn_on_off_backwards_compatibility = False is REQUIRED
+    #    to prevent HA's legacy compat check from interfering.
+    # ----------------------------------------------------------------
+    _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
-        | ClimateEntityFeature.SWING_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
+    _enable_turn_on_off_backwards_compatibility = False  # REQUIRED for 2026.x
+
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_hvac_modes = [
+        HVACMode.OFF,
+        HVACMode.AUTO,
+        HVACMode.COOL,
+        HVACMode.HEAT,
+        HVACMode.DRY,
+        HVACMode.FAN_ONLY,
+    ]
+    _attr_fan_modes = list(_DAIKIN_TO_HA_FAN.values())
+    _attr_min_temp = MIN_TEMP
+    _attr_max_temp = MAX_TEMP
+    _attr_target_temperature_step = TEMP_STEP
     _attr_has_entity_name = True
     _attr_name = None
 
     def __init__(self, coordinator: DaikinCoordinator) -> None:
         super().__init__(coordinator)
-        device = coordinator.device
-        self._attr_unique_id = f"{DOMAIN}_{device.uid}_{device.port}"
+        device_data = coordinator.data or {}
+        self._device_id = coordinator.device_id
+        self._attr_unique_id = f"{DOMAIN}_{self._device_id}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.uid)},
-            name=device.name,
+            identifiers={(DOMAIN, self._device_id)},
+            name=device_data.get("name", f"Daikin {self._device_id[:8]}"),
             manufacturer="Daikin",
-            model="BRP069C4x",
-            sw_version=device.fw_ver.replace("_", "."),
+            model=device_data.get("model", "Mini-split"),
+            sw_version=device_data.get("firmwareVersion"),
         )
 
-    @property
-    def _state(self):
-        return self.coordinator.data.state
+    # --------------------------------------------------------- state props
 
     @property
     def hvac_mode(self) -> HVACMode:
-        if not self._state.power:
-            return HVACMode.OFF
-        return DAIKIN_TO_HVAC.get(self._state.mode, HVACMode.COOL)
+        data = self.coordinator.data or {}
+        raw_mode = data.get("mode", DAIKIN_MODE_OFF)
+        return _DAIKIN_TO_HA_MODE.get(raw_mode, HVACMode.OFF)
 
     @property
     def current_temperature(self) -> float | None:
-        t = self._state.indoor_temp
-        return _c_to_f(t) if t != 0.0 else None
+        data = self.coordinator.data or {}
+        return data.get("tempIndoor") or data.get("currentTemperature")
 
     @property
     def target_temperature(self) -> float | None:
-        t = self._state.target_temp
-        return _c_to_f(t) if t is not None else None
+        data = self.coordinator.data or {}
+        return data.get("tempSet") or data.get("targetTemperature")
 
     @property
-    def current_humidity(self) -> int | None:
-        h = self._state.indoor_humidity
-        return h if h > 0 else None
+    def fan_mode(self) -> str | None:
+        data = self.coordinator.data or {}
+        raw_fan = data.get("fanSpeed") or data.get("fan", DAIKIN_FAN_AUTO)
+        return _DAIKIN_TO_HA_FAN.get(str(raw_fan), FAN_AUTO)
 
-    @property
-    def fan_mode(self) -> str:
-        return DAIKIN_TO_HA_FAN.get(self._state.fan_rate, FAN_AUTO)
-
-    @property
-    def swing_mode(self) -> str:
-        return self._state.swing_mode
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        attrs: dict[str, Any] = {}
-        ot = self._state.outdoor_temp
-        if ot != 0.0:
-            attrs["outdoor_temperature_f"] = _c_to_f(ot)
-        return attrs
-
-    # ------------------------------------------------------------------
-    # Service handlers
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------- commands
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        client = self.coordinator.client
-        device = self.coordinator.device
-        try:
-            if hvac_mode == HVACMode.OFF:
-                await client.set_control(device, power=False)
-                self.coordinator.set_optimistic_data(power=False)
-            else:
-                daikin_mode = HVAC_TO_DAIKIN.get(hvac_mode, "cool")
-                await client.set_control(device, power=True, mode=daikin_mode)
-                self.coordinator.set_optimistic_data(power=True, mode=daikin_mode)
-        except DaikinAPIError as err:
-            _LOGGER.error("Failed to set HVAC mode %s: %s", hvac_mode, err)
-            await self.coordinator.async_request_refresh()
+        """Set HVAC mode."""
+        daikin_mode = _HA_TO_DAIKIN_MODE.get(hvac_mode)
+        if daikin_mode is None:
+            _LOGGER.warning("Unsupported HVAC mode: %s", hvac_mode)
+            return
+        await self._send({"mode": daikin_mode})
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        temp_f = kwargs.get(ATTR_TEMPERATURE)
-        if temp_f is None:
+        """Set target temperature.
+
+        HA 2026.x passes temperature via ATTR_TEMPERATURE in kwargs.
+        Always use kwargs.get(ATTR_TEMPERATURE) — never positional args.
+        """
+        temperature = kwargs.get(ATTR_TEMPERATURE)
+        if temperature is None:
+            _LOGGER.warning("async_set_temperature called with no temperature value")
             return
-        temp_c = _f_to_c(float(temp_f))
-        client = self.coordinator.client
-        device = self.coordinator.device
-        try:
-            await client.set_control(device, target_temp=temp_c)
-            self.coordinator.set_optimistic_data(target_temp=temp_c)
-        except DaikinAPIError as err:
-            _LOGGER.error("Failed to set temperature %sF (%sC): %s", temp_f, temp_c, err)
-            await self.coordinator.async_request_refresh()
+        await self._send({"tempSet": float(temperature)})
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
-        client = self.coordinator.client
-        device = self.coordinator.device
-        try:
-            await client.set_control(device, fan_rate=fan_mode)
-            self.coordinator.set_optimistic_data(fan_rate=fan_mode)
-        except DaikinAPIError as err:
-            _LOGGER.error("Failed to set fan mode %s: %s", fan_mode, err)
-            await self.coordinator.async_request_refresh()
-
-    async def async_set_swing_mode(self, swing_mode: str) -> None:
-        """swing_mode is the HA label: off / vertical / horizontal / both."""
-        client = self.coordinator.client
-        device = self.coordinator.device
-        try:
-            await client.set_control(device, swing_mode=swing_mode)
-            self.coordinator.set_optimistic_data(swing_mode=swing_mode)
-        except DaikinAPIError as err:
-            _LOGGER.error("Failed to set swing mode %s: %s", swing_mode, err)
-            await self.coordinator.async_request_refresh()
+        """Set fan mode."""
+        daikin_fan = _HA_TO_DAIKIN_FAN.get(fan_mode)
+        if daikin_fan is None:
+            _LOGGER.warning("Unsupported fan mode: %s", fan_mode)
+            return
+        await self._send({"fanSpeed": daikin_fan})
 
     async def async_turn_on(self) -> None:
-        await self.async_set_hvac_mode(
-            DAIKIN_TO_HVAC.get(self._state.mode, HVACMode.COOL)
-            if self._state.mode else HVACMode.COOL
-        )
+        """Turn on — restore last non-OFF mode or default to COOL."""
+        data = self.coordinator.data or {}
+        last_mode = data.get("lastMode", DAIKIN_MODE_COOL)
+        if last_mode == DAIKIN_MODE_OFF:
+            last_mode = DAIKIN_MODE_COOL
+        await self._send({"mode": last_mode})
 
     async def async_turn_off(self) -> None:
-        await self.async_set_hvac_mode(HVACMode.OFF)
+        """Turn off."""
+        await self._send({"mode": DAIKIN_MODE_OFF})
+
+    # --------------------------------------------------------- internals
+
+    async def _send(self, params: dict[str, Any]) -> None:
+        """Send params to device, then request a coordinator refresh."""
+        try:
+            await self.coordinator.api.set_device_parameters(self._device_id, params)
+        except DaikinApiError as err:
+            _LOGGER.error("Failed to send command to %s: %s", self._device_id, err)
+            return
+        # Force an immediate poll so the UI reflects the new state
+        await self.coordinator.async_request_refresh()

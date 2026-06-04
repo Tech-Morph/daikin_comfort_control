@@ -1,94 +1,45 @@
-"""Constants for Daikin Comfort Control.
+"""Constants for Daikin Comfort Control integration."""
 
-This is the single source of truth for every name imported from .const
-across the integration. Before editing, check every import in:
-  __init__.py, daikin_api.py, coordinator.py, climate.py, sensor.py
-"""
 DOMAIN = "daikin_comfort_control"
 
-# ---------------------------------------------------------------------------
-# Config entry keys
-# ---------------------------------------------------------------------------
-CONF_USERNAME        = "username"
-CONF_PASSWORD        = "password"
-CONF_UID             = "uid"
-CONF_SCAN_INTERVAL   = "scan_interval"
+BASE_URL = "https://api.daikinskyport.com"
+
+CONF_EMAIL = "email"
+CONF_PASSWORD = "password"
+CONF_SCAN_INTERVAL = "scan_interval"
+
 DEFAULT_SCAN_INTERVAL = 30
 
-# ---------------------------------------------------------------------------
-# Mode mappings
-# ---------------------------------------------------------------------------
-DAIKIN_TO_HA_MODE: dict[int, str] = {
-    1: "auto",
-    2: "dry",
-    3: "cool",
-    4: "heat",
-    6: "fan_only",
-}
-HA_TO_DAIKIN_MODE: dict[str, int] = {v: k for k, v in DAIKIN_TO_HA_MODE.items()}
+# API endpoints
+ENDPOINT_AUTH = "/users/auth"
+ENDPOINT_AUTH_REFRESH = "/users/auth/token"
+ENDPOINT_DEVICES = "/devices"
+ENDPOINT_DEVICE = "/devices/{device_id}"
 
-# ---------------------------------------------------------------------------
-# Fan speed mappings
-# ---------------------------------------------------------------------------
-DAIKIN_TO_HA_FAN: dict[str, str] = {
-    "A": "auto",
-    "B": "quiet",
-    "3": "low",
-    "4": "medium_low",
-    "5": "medium",
-    "6": "medium_high",
-    "7": "high",
-}
-HA_TO_DAIKIN_FAN: dict[str, str] = {v: k for k, v in DAIKIN_TO_HA_FAN.items()}
+# Daikin mode integers (confirm via mitmproxy capture)
+DAIKIN_MODE_OFF = 0
+DAIKIN_MODE_AUTO = 1
+DAIKIN_MODE_DRY = 2
+DAIKIN_MODE_COOL = 3
+DAIKIN_MODE_HEAT = 4
+DAIKIN_MODE_FAN = 6
 
-# ---------------------------------------------------------------------------
-# Swing mode mappings
-#
-# Confirmed via mitmproxy (2026-06-03):
-#   dfd3=0  f_dir_ud=0  f_dir_lr=0  -> swing off
-#   dfd3=1  f_dir_ud=S  f_dir_lr=0  -> tilt (up/down swing)
-#   dfd3=2  f_dir_ud=0  f_dir_lr=S  -> horizontal (left/right swing)
-#   dfd3=3  f_dir_ud=S  f_dir_lr=S  -> both / 3D swing
-#
-# All three params must be sent together on every set_control call.
-# HA swing mode label -> (dfd3, f_dir_ud, f_dir_lr)
-# ---------------------------------------------------------------------------
-SWING_OFF        = "off"
-SWING_TILT       = "vertical"     # HA built-in label for up/down
-SWING_HORIZONTAL = "horizontal"   # HA built-in label for left/right
-SWING_BOTH       = "both"         # HA built-in label for 3D
+DAIKIN_FAN_AUTO = "auto"
+DAIKIN_FAN_QUIET = "quiet"
+DAIKIN_FAN_LOW = "low"
+DAIKIN_FAN_MEDIUM = "medium"
+DAIKIN_FAN_HIGH = "high"
+DAIKIN_FAN_POWERFUL = "powerful"
 
-# HA swing label -> (dfd3 str, f_dir_ud str, f_dir_lr str)
-HA_TO_DAIKIN_SWING: dict[str, tuple[str, str, str]] = {
-    SWING_OFF:        ("0", "0", "0"),
-    SWING_TILT:       ("1", "S", "0"),
-    SWING_HORIZONTAL: ("2", "0", "S"),
-    SWING_BOTH:       ("3", "S", "S"),
-}
+FAN_MODES = [
+    DAIKIN_FAN_AUTO,
+    DAIKIN_FAN_QUIET,
+    DAIKIN_FAN_LOW,
+    DAIKIN_FAN_MEDIUM,
+    DAIKIN_FAN_HIGH,
+    DAIKIN_FAN_POWERFUL,
+]
 
-# (dfd3 str) -> HA swing label
-DAIKIN_TO_HA_SWING: dict[str, str] = {
-    "0": SWING_OFF,
-    "1": SWING_TILT,
-    "2": SWING_HORIZONTAL,
-    "3": SWING_BOTH,
-}
-
-# ---------------------------------------------------------------------------
-# Mode-specific temperature sentinels
-# ---------------------------------------------------------------------------
-MODE_STEMP_SENTINEL: dict[str, str] = {
-    "dry":      "M",
-    "fan_only": "--",
-}
-
-# ---------------------------------------------------------------------------
-# Mode-specific temperature parameter names
-# ---------------------------------------------------------------------------
-MODE_TEMP_PARAMS: dict[int, tuple[str, str]] = {
-    1: ("dt1", "dh1"),
-    2: ("dt2", "dh2"),
-    3: ("dt3", "dh3"),
-    4: ("dt4", "dh4"),
-    6: ("dt6", "dh6"),
-}
+MIN_TEMP = 16.0
+MAX_TEMP = 30.0
+TEMP_STEP = 0.5
