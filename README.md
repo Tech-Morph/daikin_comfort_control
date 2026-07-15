@@ -2,9 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
-A HACS-compatible custom integration for controlling **Daikin mini-split units** via the Daikin Comfort Control cloud (North American Skyport platform).
-
-Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API was removed. All control goes through `https://scr.daikincloud.net`.
+A HACS-compatible custom integration for controlling **Daikin mini-split units** via the Daikin Comfort Control cloud (North American Skyport platform). Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API was removed. All control goes through `https://scr.daikincloud.net`.
 
 > **Status:** Beta — all core API values confirmed via mitmproxy traffic capture. Tested against Daikin FTXM-series units with BRP069C4x adapter on FW 3.x.
 
@@ -22,26 +20,43 @@ Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API w
 
 ---
 
+## Want Autonomous Climate Control?
+
+This integration handles the connection to your Daikin unit, but it does not decide *when* to change temperature, mode, or fan speed on its own — that's manual or automation-driven.
+
+For fully autonomous, self-adjusting climate control built on top of this integration, check out **[Daikin-Smart-Temperature](https://github.com/Tech-Morph/Daikin-Smart-Temperature)**:
+
+- Reads `htemp`/`otemp` directly from this integration's coordinator — no extra sensors or hardware required
+- Automatically switches between cool, heat, and fan-only based on live indoor temperature vs. your target
+- Time-of-day learning offsets (morning/day/evening/night) so comfort adjusts throughout the day
+- Season-aware heating logic — e.g., suppress heat in summer unless it's actually cold outside and only at night
+- Outdoor-trend pre-cooling — tightens response before afternoon heat spikes hit
+- Manual override detection — pauses automation if you adjust the AC directly, then resumes automatically
+- Configurable safety rails: min/max temp, allowed HVAC modes, max fan speed, mode-switch cooldown
+
+Install **Daikin Comfort Control** (this repo) first, then add **Daikin-Smart-Temperature** on top — it will auto-detect any devices configured here.
+
+---
+
 ## Entities Created Per Device
 
 ### Climate
 | Entity | Domain |
 |---|---|
-| `climate.<device_name>` | `climate` |
+| `climate.<device>` | `climate` |
 
 ### Sensors
 | Entity | Unit | Notes |
 |---|---|---|
-| `sensor.<device_name>_outdoor_temperature` | °F / °C | Auto-converted to your HA unit system |
-| `sensor.<device_name>_indoor_temperature` | °F / °C | Auto-converted to your HA unit system |
-| `sensor.<device_name>_indoor_humidity` | % | `unavailable` if adapter has no humidity sensor |
-| `sensor.<device_name>_fan_speed` | — | auto / quiet / low / medium_low / medium / medium_high / high |
-| `sensor.<device_name>_fan_direction` | — | stopped / swing / position_1–5 |
+| `sensor.<device>_outdoor_temperature` | °F / °C | Auto-converted to your HA unit system |
+| `sensor.<device>_indoor_temperature` | °F / °C | Auto-converted to your HA unit system |
+| `sensor.<device>_indoor_humidity` | % | `unavailable` if adapter has no humidity sensor |
+| `sensor.<device>_fan_speed` | — | auto / quiet / low / medium_low / medium / medium_high / high |
+| `sensor.<device>_fan_direction` | — | stopped / swing / position_1–5 |
 
 ---
 
 ## Supported HVAC Modes
-
 | HA Mode | Daikin `mode=` |
 |---|---|
 | Cool | `3` |
@@ -51,7 +66,6 @@ Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API w
 | Fan Only | `6` |
 
 ## Fan Speeds
-
 | HA Fan Mode | Daikin `f_rate=` |
 |---|---|
 | Auto | `A` |
@@ -67,14 +81,12 @@ Targeted at BRP069C4x Wi-Fi adapters on firmware 3.x, where the local REST API w
 ## Installation
 
 ### Via HACS (Recommended)
-
 1. In HA: **HACS → Integrations → ⋮ → Custom repositories**
 2. Add `https://github.com/Tech-Morph/daikin_comfort_control` as type **Integration**
 3. Install **Daikin Comfort Control**
 4. Restart Home Assistant
 
 ### Manual
-
 ```bash
 cp -r custom_components/daikin_comfort_control \
   /config/custom_components/daikin_comfort_control
@@ -98,14 +110,10 @@ cp -r custom_components/daikin_comfort_control \
 
 ### Finding Your Device UID
 
-The UID is a static 32-character hex string tied to your Wi-Fi adapter hardware. It appears as the `x-daikin-uid` header in every request the app makes to `scr.daikincloud.net`.
+The UID is a static 32-character hex string tied to your Wi-Fi adapter hardware. It appears as the `x-daikin-uid` header in every request the app makes to `scr.daikincloud.net`. Capture it once using mitmproxy — see [docs/traffic-capture.md](docs/traffic-capture.md) for step-by-step instructions.
 
-Capture it once using mitmproxy — see [docs/traffic-capture.md](docs/traffic-capture.md) for step-by-step instructions.
+Example format (placeholder): x-daikin-uid: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-Example format (placeholder):
-```
-x-daikin-uid: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
 
 ---
 
@@ -122,7 +130,7 @@ x-daikin-uid: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | Auth header | `authentication: bearer <token>` *(non-standard header name)* |
 | Control read | `GET /aircon/get_control_info` |
 | Control write | `GET /aircon/set_control_info` |
-| Success response | `ret=OK,adv=` |
+| Success response | `ret=OK,adv=<value>` |
 | Response format | Comma-separated `key=value` (not JSON) |
 
 See [docs/api_docs.md](docs/api_docs.md) for the complete API reference.
@@ -133,27 +141,25 @@ See [docs/api_docs.md](docs/api_docs.md) for the complete API reference.
 
 ### Project Structure
 
-```
 custom_components/daikin_comfort_control/
-├── __init__.py        # Entry point, setup/unload
-├── manifest.json      # Integration metadata
-├── const.py           # All confirmed mode/fan/parameter mappings
-├── daikin_api.py      # Async cloud API client (aiohttp)
-├── coordinator.py     # DataUpdateCoordinator
-├── config_flow.py     # UI config flow
-├── climate.py         # Climate platform entity
-├── sensor.py          # Sensor platform (5 sensors per device)
-├── strings.json       # UI strings
+├── _init_.py # Entry point, setup/unload
+├── manifest.json # Integration metadata
+├── const.py # All confirmed mode/fan/parameter mappings
+├── daikin_api.py # Async cloud API client (aiohttp)
+├── coordinator.py # DataUpdateCoordinator
+├── config_flow.py # UI config flow
+├── climate.py # Climate platform entity
+├── sensor.py # Sensor platform (5 sensors per device)
+├── strings.json # UI strings
+├── brand/ # Icon/logo for HA frontend (2026.3+)
 └── translations/
-    └── en.json
+└── en.json
 
 docs/
-├── api_docs.md        # Complete confirmed API reference
+├── api_docs.md # Complete confirmed API reference
 └── traffic-capture.md # mitmproxy setup guide
-```
 
 ### Debug Logging
-
 ```yaml
 logger:
   default: warning
@@ -179,6 +185,4 @@ logger:
 
 ## Contributing
 
-Outstanding unknowns: `f_dir_ud`/`f_dir_lr` valid value ranges, schedule/timer endpoints, and error response format for invalid parameters. See [docs/api_docs.md](docs/api_docs.md) for the full capture checklist.
-
-Pull requests welcome.
+Outstanding unknowns: `f_dir_ud`/`f_dir_lr` valid value ranges, schedule/timer endpoints, and error response format for invalid parameters. See [docs/api_docs.md](docs/api_docs.md) for the full capture checklist. Pull requests welcome.
