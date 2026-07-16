@@ -39,11 +39,11 @@ from .exceptions import DaikinApiError
 
 _LOGGER = logging.getLogger(__name__)
 
-FAN_QUIET       = "quiet"
-FAN_MEDIUM_LOW  = "medium_low"
+FAN_QUIET = "quiet"
+FAN_MEDIUM_LOW = "medium_low"
 FAN_MEDIUM_HIGH = "medium_high"
 
-FAN_MODES   = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
+FAN_MODES = [FAN_AUTO, FAN_QUIET, FAN_LOW, FAN_MEDIUM_LOW, FAN_MEDIUM, FAN_MEDIUM_HIGH, FAN_HIGH]
 SWING_MODES = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
 
 HVAC_MODES = [
@@ -59,16 +59,16 @@ DAIKIN_INT_TO_HVAC: dict[int, HVACMode] = {
     DAIKIN_MODE_AUTO: HVACMode.AUTO,
     DAIKIN_MODE_COOL: HVACMode.COOL,
     DAIKIN_MODE_HEAT: HVACMode.HEAT,
-    DAIKIN_MODE_DRY:  HVACMode.DRY,
-    DAIKIN_MODE_FAN:  HVACMode.FAN_ONLY,
+    DAIKIN_MODE_DRY: HVACMode.DRY,
+    DAIKIN_MODE_FAN: HVACMode.FAN_ONLY,
 }
 HVAC_TO_DAIKIN_INT: dict[HVACMode, int] = {v: k for k, v in DAIKIN_INT_TO_HVAC.items()}
 
 _SWING_TO_DIRS: dict[str, tuple[str, str]] = {
-    SWING_OFF:        ("0", "0"),
-    SWING_VERTICAL:   ("S", "0"),
+    SWING_OFF: ("0", "0"),
+    SWING_VERTICAL: ("S", "0"),
     SWING_HORIZONTAL: ("0", "S"),
-    SWING_BOTH:       ("S", "S"),
+    SWING_BOTH: ("S", "S"),
 }
 _DIRS_TO_SWING: dict[tuple[str, str], str] = {v: k for k, v in _SWING_TO_DIRS.items()}
 
@@ -98,18 +98,27 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     Temperature reported/accepted in FAHRENHEIT (native), 1 F step.
     Internal API calls always use Celsius (0.5 C precision).
+
     set_control_info requires the FULL state on every call — partial
     params cause the unit to revert omitted fields to defaults.
+
+    NOTE: In fan-only mode, the unit's stemp value is not a real target
+    (there's nothing to heat/cool toward when only circulating air) and
+    Daikin firmware frequently resets it to a default (commonly 72°F)
+    on its own, independent of anything HA or any integration sent.
+    target_temperature returns None while in fan-only so the frontend
+    doesn't display this meaningless, firmware-reset value as if it
+    were an active setpoint.
     """
 
-    _attr_temperature_unit        = UnitOfTemperature.FAHRENHEIT
+    _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_target_temperature_step = TEMP_STEP_F
-    _attr_min_temp                = MIN_TEMP_F
-    _attr_max_temp                = MAX_TEMP_F
-    _attr_hvac_modes              = HVAC_MODES
-    _attr_fan_modes               = FAN_MODES
-    _attr_swing_modes             = SWING_MODES
-    _attr_supported_features      = (
+    _attr_min_temp = MIN_TEMP_F
+    _attr_max_temp = MAX_TEMP_F
+    _attr_hvac_modes = HVAC_MODES
+    _attr_fan_modes = FAN_MODES
+    _attr_swing_modes = SWING_MODES
+    _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.SWING_MODE
@@ -143,15 +152,15 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         d = self._d
         stemp = str(d.target_temp)
         params: dict[str, Any] = {
-            "pow":      "1" if d.power else "0",
-            "mode":     str(d.mode),
-            "stemp":    stemp,
-            "dt3":      stemp,
-            "f_rate":   d.fan_rate,
-            "shum":     "0",
+            "pow": "1" if d.power else "0",
+            "mode": str(d.mode),
+            "stemp": stemp,
+            "dt3": stemp,
+            "f_rate": d.fan_rate,
+            "shum": "0",
             "f_dir_ud": d.f_dir_ud,
             "f_dir_lr": d.f_dir_lr,
-            "dh3":      "0",
+            "dh3": "0",
         }
         if overrides:
             params.update(overrides)
@@ -177,6 +186,17 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
+        """Return None in fan-only mode.
+
+        Setpoint is meaningless when only circulating air, and Daikin
+        firmware is known to silently reset stemp to a default (often
+        72°F) on its own while in this mode — independent of any
+        command sent by HA. Displaying that value as a real target
+        was misleading and previously caused a false manual-override
+        detection in the companion smart_temperature integration.
+        """
+        if self._d.mode == DAIKIN_MODE_FAN:
+            return None
         return _c_to_f(self._d.target_temp)
 
     @property
@@ -229,6 +249,7 @@ class DaikinClimateEntity(CoordinatorEntity[DaikinCoordinator], ClimateEntity):
         temp_f = kwargs.get(ATTR_TEMPERATURE)
         if temp_f is None:
             return
+
         temp_c = _f_to_c(float(temp_f))
         stemp = str(temp_c)
         try:
