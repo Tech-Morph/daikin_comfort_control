@@ -180,9 +180,3 @@ logger:
 **Sensors show `unavailable`** — Normal on first load. They populate after the first successful poll. Humidity will remain `unavailable` if your adapter model has no humidity sensor.
 
 **Temperature shows in wrong unit** — The integration reports in °C natively; HA converts to your configured unit system automatically. Check **Settings → System → General → Unit system**.
-
----
-
-## Contributing
-
-Outstanding unknowns: `f_dir_ud`/`f_dir_lr` valid value ranges, schedule/timer endpoints, and error response format for invalid parameters. See [docs/api_docs.md](docs/api_docs.md) for the full capture checklist. Pull requests welcome.
